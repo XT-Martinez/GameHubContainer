@@ -1,0 +1,8 @@
+[submodule "Sunshine"]
+	path = Sunshine
+	url = https://github.com/XT-Martinez/Sunshine
+	branch = vulkan-pr-4
+[submodule "gamescope"]
+	path = gamescope
+	url = https://github.com/XT-Martinez/gamescope
+	branch = gamescope-ba
