@@ -1,0 +1,22 @@
+[Unit]
+Description=Sunshine Game Streaming Server
+After=gaming-session.service
+Wants=gaming-session.service
+
+[Service]
+Type=simple
+ExecStartPre=/usr/local/bin/wait-for-wayland.sh
+ExecStartPre=/bin/bash -c 'test -f %h/.config/sunshine/sunshine.conf || (mkdir -p %h/.config/sunshine && cp /etc/sunshine/sunshine.conf.default %h/.config/sunshine/sunshine.conf)'
+ExecStart=/usr/bin/sunshine
+Restart=on-failure
+RestartSec=5
+
+Environment=HOME=/home/gamer
+Environment=USER=gamer
+Environment=XDG_SESSION_TYPE=wayland
+
+# Populated by wait-for-wayland.sh
+EnvironmentFile=-%t/sunshine-wayland.env
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,14 @@
+[Unit]
+Description=Input device node daemon (container isolation)
+# Start before gaming session so devices are available when
+# gamescope/Steam/Sunshine start creating virtual inputs
+Before=gaming-session.service sunshine.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/input-mknod-daemon
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

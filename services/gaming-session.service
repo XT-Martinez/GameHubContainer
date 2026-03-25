@@ -1,0 +1,17 @@
+[Unit]
+Description=Gamescope Steam Session
+After=pipewire.socket wireplumber.service
+Wants=pipewire.socket wireplumber.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/start-gaming-session.sh
+Restart=on-failure
+RestartSec=5
+
+Environment=HOME=/home/gamer
+Environment=USER=gamer
+Environment=XDG_SESSION_TYPE=wayland
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,72 @@
+# Sunshine + Gamescope + Steam container
+#
+# Usage:
+#   podman compose up -d
+#   podman compose logs -f
+#
+# First run: access Sunshine web UI at https://<host-ip>:47990
+# to set up credentials and pair with Moonlight.
+#
+# For multiple instances, duplicate the service with a unique
+# CONTAINER_ID and separate volume names.
+
+services:
+  sunshine:
+    build:
+      context: .
+      # For development (building from parent Sunshine repo):
+      # context: ..
+      # dockerfile: sunshine-container/Dockerfile
+      # additional_contexts:
+      #   gamescope: gamescope-bazzite
+      #   sunshine: .
+      #   shim: sunshine-container/container-input-shim
+      #   services: sunshine-container/services
+      #   scripts: sunshine-container/scripts
+    image: sunshine-gamescope:latest
+
+    # systemd container — Podman auto-configures cgroups
+    # Use: podman compose up (not docker compose)
+    init: false
+    stop_signal: SIGRTMIN+3
+
+    # GPU + input device passthrough
+    devices:
+      - /dev/dri:/dev/dri              # AMD GPU (render + display)
+      - /dev/uinput:/dev/uinput        # Virtual input creation
+      # - /dev/uhid:/dev/uhid           # Uncomment for PS5 DualSense
+    device_cgroup_rules:
+      - 'c 13:* rmw'                   # Input event devices (major 13)
+      - 'c 226:* rmw'                  # DRI render nodes (major 226)
+
+    # Private /dev/input — the shim auto-populates with container's own devices
+    tmpfs:
+      - /dev/input:rw,noexec,nosuid,size=1m
+
+    volumes:
+      - /sys:/sys:ro                   # sysfs for device discovery
+      - steam-data:/home/gamer/.steam  # Persist Steam data
+      - steam-local:/home/gamer/.local/share/Steam
+      - sunshine-config:/home/gamer/.config/sunshine
+
+    # Host networking is simplest for game streaming
+    # (avoids UDP port range mapping and mDNS issues)
+    network_mode: host
+
+    environment:
+      CONTAINER_ID: sunshine-1
+      # Override to disable shim debug logging
+      UINPUT_SHIM_DEBUG: "0"
+
+    # Capabilities needed for container operation
+    cap_add:
+      - SYS_ADMIN    # DRM access (fallback capture)
+      - MKNOD        # uinput shim creates /dev/input nodes
+
+    security_opt:
+      - label=disable  # SELinux: allow device access
+
+volumes:
+  steam-data:
+  steam-local:
+  sunshine-config:
