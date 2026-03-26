@@ -6,7 +6,14 @@
 # (including host Steam's virtual gamepads) untouched.
 #
 # Install: sudo cp 99-sunshine-container-ignore.rules /etc/udev/rules.d/
-#          sudo udevadm control --reload-rules
+#          sudo udevadm control --reload-rules && sudo udevadm trigger
+
+# Allow containers to create virtual input devices.
+# In rootless podman, device permissions cannot be changed inside the container
+# (kernel blocks chmod/setfacl/mknod on device nodes in user namespaces).
+# Setting 0666 on the host means the container's non-root user can access it.
+KERNEL=="uinput", SUBSYSTEM=="misc", MODE="0666"
+KERNEL=="uhid", SUBSYSTEM=="misc", MODE="0666"
 
 # Make libinput ignore container-tagged input devices
 SUBSYSTEM=="input", ATTR{phys}=="container-*", ENV{LIBINPUT_IGNORE_DEVICE}="1"

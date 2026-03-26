@@ -84,7 +84,7 @@ static void shim_init(void) {
 /* ── Helpers ───────────────────────────────────────────────── */
 
 static void track_open(int fd, const char *path) {
-    if (fd < 0 || fd >= MAX_FDS || !path)
+    if (fd < 0 || fd >= MAX_FDS || !path || !real_open)
         return;
 
     if (strcmp(path, "/dev/uinput") == 0) {
@@ -108,6 +108,7 @@ int open(const char *path, int flags, ...) {
         mode = va_arg(ap, mode_t);
         va_end(ap);
     }
+    if (!real_open) real_open = dlsym(RTLD_NEXT, "open");
     int fd = real_open(path, flags, mode);
     track_open(fd, path);
     return fd;
@@ -121,6 +122,7 @@ int open64(const char *path, int flags, ...) {
         mode = va_arg(ap, mode_t);
         va_end(ap);
     }
+    if (!real_open) real_open = dlsym(RTLD_NEXT, "open");
     int fd = real_open(path, flags, mode);
     track_open(fd, path);
     return fd;
@@ -134,6 +136,7 @@ int openat(int dirfd, const char *path, int flags, ...) {
         mode = va_arg(ap, mode_t);
         va_end(ap);
     }
+    if (!real_openat) real_openat = dlsym(RTLD_NEXT, "openat");
     int fd = real_openat(dirfd, path, flags, mode);
     track_open(fd, path);
     return fd;
@@ -147,12 +150,14 @@ int openat64(int dirfd, const char *path, int flags, ...) {
         mode = va_arg(ap, mode_t);
         va_end(ap);
     }
+    if (!real_openat) real_openat = dlsym(RTLD_NEXT, "openat");
     int fd = real_openat(dirfd, path, flags, mode);
     track_open(fd, path);
     return fd;
 }
 
 int close(int fd) {
+    if (!real_close) real_close = dlsym(RTLD_NEXT, "close");
     if (fd >= 0 && fd < MAX_FDS && fd_type[fd] != FD_NONE) {
         DBG("closing tracked fd %d", fd);
         fd_type[fd]   = FD_NONE;
@@ -168,6 +173,8 @@ int ioctl(int fd, unsigned long request, ...) {
     va_start(ap, request);
     void *arg = va_arg(ap, void *);
     va_end(ap);
+
+    if (!real_ioctl) real_ioctl = dlsym(RTLD_NEXT, "ioctl");
 
     /* Pass through anything that isn't a tracked uinput fd */
     if (fd < 0 || fd >= MAX_FDS || fd_type[fd] != FD_UINPUT)
@@ -198,6 +205,8 @@ int ioctl(int fd, unsigned long request, ...) {
 /* ── Hooked: write (UHID phys tagging) ────────────────────── */
 
 ssize_t write(int fd, const void *buf, size_t count) {
+    if (!real_write) real_write = dlsym(RTLD_NEXT, "write");
+
     if (fd < 0 || fd >= MAX_FDS || fd_type[fd] != FD_UHID)
         return real_write(fd, buf, count);
 

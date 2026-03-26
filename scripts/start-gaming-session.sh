@@ -7,6 +7,11 @@
 #   - Steam launch in Big Picture / Game Mode
 #
 # This script blocks until gamescope exits.
+#
+# Resolution/refresh rate are set at gamescope startup via env vars:
+#   SCREEN_WIDTH  (default: 1920)
+#   SCREEN_HEIGHT (default: 1080)
+#   CUSTOM_REFRESH_RATES (default: 60,90,120 — gamescope --custom-refresh-rates)
 
 set -euo pipefail
 
@@ -20,5 +25,18 @@ mkdir -p "$XDG_RUNTIME_DIR"
 if [ -f /usr/share/sdl/gamecontrollerdb.txt ]; then
     export SDL_GAMECONTROLLERCONFIG_FILE=/usr/share/sdl/gamecontrollerdb.txt
 fi
+
+# Container has no seat/session — force headless backend without libseat.
+# These must be set in the systemd user manager so they propagate to
+# gamescope-session-plus@steam.service (which is started as a separate unit).
+systemctl --user import-environment 2>/dev/null || true
+systemctl --user set-environment \
+    LIBSEAT_BACKEND=noop \
+    WLR_BACKENDS=headless \
+    BACKEND=headless \
+    LD_PRELOAD=/usr/lib64/libuinput_shim.so \
+    SCREEN_WIDTH="${SCREEN_WIDTH:-1920}" \
+    SCREEN_HEIGHT="${SCREEN_HEIGHT:-1080}" \
+    CUSTOM_REFRESH_RATES="${CUSTOM_REFRESH_RATES:-60,90,120}"
 
 exec gamescope-session-plus steam

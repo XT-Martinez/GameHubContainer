@@ -7,7 +7,7 @@ A containerized game streaming setup that runs a custom **Sunshine** streaming s
 1. **Zero-root streaming**: Use Wayland-native gamescope scanout capture instead of KMS/DRM, eliminating the need for `CAP_SYS_ADMIN` or root access for screen capture.
 2. **Multi-instance isolation**: Run multiple Sunshine+Gamescope+Steam containers on the same host without input devices leaking between them or to the host desktop.
 3. **SteamOS compatibility**: Use Valve's patched Mesa and PipeWire from Bazzite COPRs for gamescope-optimized rendering (HDR, framerate control).
-4. **No application modifications**: The uinput shim works transparently via `LD_PRELOAD` — no changes needed to Sunshine, Steam, or any other application.
+4. **No application modifications**: The uinput shim and mknod daemon work transparently — no changes needed to Sunshine, Steam, or any other application.
 
 ## Components
 
@@ -34,24 +34,40 @@ Instead of going through PipeWire or requiring DRM access, this Sunshine build c
 - Event-driven capture with per-frame HDR metadata
 - Priority in capture method selection: NvFBC > **Gamescope** > Wayland > KMS > X11
 
-### uinput Isolation Shim (`libuinput_shim.so`)
+### Input Isolation (Shim + Daemon)
 
-An `LD_PRELOAD` library that solves the **container input isolation problem**.
+Container input isolation is handled by two cooperating components:
 
-When a process inside a container creates a virtual input device via `/dev/uinput`, that device appears globally in the kernel's input subsystem — visible to the host and other containers. This breaks multi-instance setups where each container should have its own isolated set of virtual controllers, keyboards, and mice.
+#### uinput Tagging Shim (`libuinput_shim.so`)
 
-The shim intercepts libc calls (`open`, `ioctl`, `write`) to:
+An `LD_PRELOAD` library that **tags** every virtual input device created inside the container with a container identifier.
 
-1. **Tag every virtual device** with a container identifier by overriding the `phys` field (e.g., `container-sunshine-1`). This works for both uinput devices (mouse, keyboard, gamepads) and UHID devices (PS5 DualSense).
+When a process creates a virtual input device via `/dev/uinput` or `/dev/uhid`, the device appears globally in the kernel's input subsystem — visible to the host and other containers. The shim solves this by intercepting libc calls (`open`, `ioctl`, `write`) and overriding the `phys` field on every device with `container-<CONTAINER_ID>`.
 
-2. **Auto-create device nodes** in the container's private `/dev/input/` tmpfs. After a uinput device is created, the shim reads sysfs to find the resulting `eventN`/`jsN` devices and calls `mknod` to make them available inside the container.
+This works for:
+- **uinput devices** (mouse, keyboard, gamepads via Inputtino and Steam Input): the shim intercepts `UI_SET_PHYS` and `UI_DEV_CREATE` ioctls
+- **UHID devices** (PS5 DualSense): the shim intercepts `write()` calls with `UHID_CREATE2` events and rewrites the `phys` field
 
-This means:
-- Host udev rules can ignore all `container-*` tagged devices (the host desktop and host Steam are unaffected)
-- Each container only sees its own devices in `/dev/input/`
-- Steam, SDL, and Inputtino work unmodified — the shim is transparent
+The shim is purely a tagger — it does not create device nodes or touch the filesystem.
 
-**How it distinguishes host Steam from container Steam**: Both create devices named "Steam Virtual Gamepad". The shim rewrites the `phys` field on ALL uinput devices created inside the container, regardless of which application creates them. Host Steam's devices have a different `phys`, so the udev rule doesn't match them.
+#### Input Device Node Daemon (`input-mknod-daemon`)
+
+A lightweight sidecar daemon that **creates `/dev/input/` device nodes** for container-tagged devices.
+
+Each container runs with a private `/dev/input/` tmpfs that starts empty. The daemon watches `/sys/class/input/` via inotify and, for every new `eventN` or `jsN` device whose `phys` field starts with `container-`, reads the major:minor numbers from sysfs and calls `mknod` to create the device node in `/dev/input/`.
+
+This split design solves the **UHID async problem**: when Inputtino creates a PS5 DualSense via UHID, the kernel's `hid-playstation` driver creates child input devices asynchronously (main controller, motion sensor, touchpad). The shim can't mknod these because they don't exist yet at `write()` time. The daemon watches for them via inotify and handles them as they appear.
+
+The daemon also:
+- **Scans existing devices at startup** in case it starts after some devices are already created
+- **Removes stale nodes** when devices are deleted from sysfs
+- **Handles all device types uniformly** — uinput, UHID, and any future device creation methods
+
+**How host Steam is distinguished from container Steam**: Both create devices named "Steam Virtual Gamepad". The shim rewrites the `phys` field on ALL uinput devices created inside the container, regardless of which application creates them. Host Steam's devices have a different `phys`, so the host udev rule doesn't match them.
+
+### Resolution Matching
+
+A default Sunshine configuration is included that automatically aligns gamescope's output resolution with the Moonlight client's request. When a stream starts, Sunshine runs `set-resolution.sh` as a prep command, which uses `wlr-randr` to set gamescope's output to the client's requested width, height, and refresh rate via the `SUNSHINE_CLIENT_WIDTH`, `SUNSHINE_CLIENT_HEIGHT`, and `SUNSHINE_CLIENT_FPS` environment variables.
 
 ## Prerequisites
 
@@ -92,30 +108,16 @@ sudo usermod -aG video,render $USER
 
 ## Building
 
-### Repository setup (for a dedicated repo)
-
-```bash
-git init sunshine-gamescope-container
-cd sunshine-gamescope-container
-
-# Add submodules
-git submodule add <your-gamescope-fork-url> gamescope
-git submodule add <your-sunshine-fork-url> sunshine
-
-# Copy container files from this directory
-cp -r /path/to/sunshine-container/{Dockerfile,docker-compose.yml,container-input-shim,services,scripts} .
-```
-
 ### Build the image
 
 ```bash
-podman build -t sunshine-gamescope .
+podman build -t gamehub-container .
 ```
 
 This is a multi-stage build:
 1. **gamescope-builder**: Compiles custom gamescope with Meson (~5 min)
 2. **sunshine-builder**: Compiles custom Sunshine with CMake, fetches Boost/FFmpeg via FetchContent (~10 min)
-3. **shim-builder**: Compiles the uinput shim (~5 sec)
+3. **shim-builder**: Compiles the uinput tagging shim and mknod daemon (~5 sec)
 4. **runtime**: Fedora 43 with Valve's Mesa/PipeWire from Bazzite COPRs, Steam, and the built binaries
 
 Subsequent builds are faster due to Docker layer caching.
@@ -175,7 +177,13 @@ podman run -d --name sunshine-2 \
     -v s2-local:/home/gamer/.local/share/Steam \
     -v s2-config:/home/gamer/.config/sunshine \
     -e CONTAINER_ID=sunshine-2 \
-    --network=host \
+    -p 57984:47984/tcp \
+    -p 57989:47989/tcp \
+    -p 57990:47990/tcp \
+    -p 58010:48010/tcp \
+    -p 57998:47998/udp \
+    -p 57999:47999/udp \
+    -p 58000:48000/udp \
     --security-opt label=disable \
     sunshine-gamescope:latest
 ```
@@ -191,7 +199,7 @@ podman compose logs -f
 
 ### First run
 
-1. Wait for Steam to finish bootstrapping (first launch downloads ~1.5GB)
+1. Wait for Steam to finish bootstrapping (a pre-cached bootstrap archive is included in the image, so this is mostly local extraction rather than a network download)
 2. Access the Sunshine web UI at `https://<host-ip>:47990`
 3. Set up a username and password
 4. Pair with Moonlight on your client device
@@ -202,7 +210,7 @@ This container works with rootless Podman with some caveats:
 
 ### mknod in rootless containers
 
-The uinput shim calls `mknod` to create device nodes in the container's `/dev/input/`. In rootless Podman:
+The mknod daemon calls `mknod` to create device nodes in the container's `/dev/input/`. In rootless Podman:
 
 - `mknod` creates the device node file inside the user namespace (this always works)
 - **Opening** the device requires the cgroup device controller to allow it
@@ -248,55 +256,64 @@ This grants all capabilities within the user namespace and disables device cgrou
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  Container (rootless Podman)                            │
-│                                                         │
-│  LD_PRELOAD=libuinput_shim.so                          │
-│  CONTAINER_ID=sunshine-1                                │
-│                                                         │
-│  ┌──────────────┐    Wayland     ┌──────────────────┐  │
-│  │   Sunshine    │◄──scanout────►│    Gamescope      │  │
-│  │  (streaming)  │   protocol    │  (compositor)     │  │
-│  └──────┬───────┘               └────────┬─────────┘  │
-│         │                                │             │
-│    VAAPI encode                    Vulkan render       │
-│         │                                │             │
-│         ▼                                ▼             │
-│  ┌──────────────────────────────────────────────────┐  │
-│  │              /dev/dri (GPU passthrough)           │  │
-│  └──────────────────────────────────────────────────┘  │
-│                                                         │
-│  ┌──────────────┐  ┌───────────┐  ┌────────────────┐  │
-│  │  Inputtino   │  │   Steam   │  │  Steam Input   │  │
-│  │ (virtual kbd │  │ (Big Pic) │  │ (virtual pads) │  │
-│  │  mouse, pad) │  │           │  │                │  │
-│  └──────┬───────┘  └───────────┘  └───────┬────────┘  │
-│         │ uinput ioctl                     │ uinput    │
-│         ▼                                  ▼           │
-│  ┌──────────────────────────────────────────────────┐  │
-│  │  libuinput_shim.so                               │  │
-│  │  • Intercepts UI_SET_PHYS → "container-sunshine-1│" │
-│  │  • After UI_DEV_CREATE → mknod /dev/input/eventN │  │
-│  └──────────────────────────────────────────────────┘  │
-│         │                                              │
-│         ▼                                              │
-│  /dev/input/ (private tmpfs — only this container's    │
-│               devices visible)                         │
-│                                                         │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│  Container (rootless Podman)                                 │
+│                                                              │
+│  LD_PRELOAD=libuinput_shim.so                               │
+│  CONTAINER_ID=sunshine-1                                     │
+│                                                              │
+│  ┌──────────────┐    Wayland      ┌──────────────────┐      │
+│  │   Sunshine    │◄──scanout─────►│    Gamescope      │      │
+│  │  (streaming)  │   protocol     │  (compositor)     │      │
+│  └──────┬───────┘                └────────┬─────────┘      │
+│         │                                 │                  │
+│    Vulkan encode                     Vulkan render            │
+│         │                                 │                  │
+│         ▼                                 ▼                  │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │              /dev/dri (GPU passthrough)               │   │
+│  └──────────────────────────────────────────────────────┘   │
+│                                                              │
+│  ┌──────────────┐  ┌───────────┐  ┌────────────────┐       │
+│  │  Inputtino   │  │   Steam   │  │  Steam Input   │       │
+│  │ (virtual kbd │  │ (Big Pic) │  │ (virtual pads) │       │
+│  │  mouse, pad) │  │           │  │                │       │
+│  └──────┬───────┘  └───────────┘  └───────┬────────┘       │
+│         │ uinput ioctl                     │ uinput         │
+│         ▼                                  ▼                │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │  libuinput_shim.so (LD_PRELOAD)                      │   │
+│  │  Tags phys="container-sunshine-1" on all devices      │   │
+│  │  (uinput via ioctl, UHID via write)                   │   │
+│  └──────────────────────────────────────────────────────┘   │
+│         │ devices appear in kernel                           │
+│         ▼                                                    │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │  input-mknod-daemon (sidecar, inotify)               │   │
+│  │  Watches /sys/class/input/ for new devices            │   │
+│  │  If phys matches "container-*":                       │   │
+│  │    → reads major:minor from sysfs                     │   │
+│  │    → mknod /dev/input/eventN                          │   │
+│  │  Handles uinput (sync) + UHID/PS5 (async) uniformly  │   │
+│  └──────────────────────────────────────────────────────┘   │
+│         │                                                    │
+│         ▼                                                    │
+│  /dev/input/ (private tmpfs — only this container's          │
+│               devices visible here)                          │
+│                                                              │
+└──────────────────────────────────────────────────────────────┘
 
 Host kernel: device appears globally but tagged with
              phys="container-sunshine-1"
 
 Host udev:   ATTR{phys}=="container-*" →
              LIBINPUT_IGNORE_DEVICE=1, ID_INPUT=""
-             (host desktop ignores it)
+             (host desktop and host Steam unaffected)
 ```
 
 ## Known Limitations
 
-- **UHID auto-mknod**: PS5 DualSense controllers use UHID, which creates input devices asynchronously via the kernel HID driver. The shim tags the `phys` field correctly, but auto-mknod for UHID child devices is not yet implemented. Workaround: use mdevd or an inotify watcher inside the container for UHID devices.
-- **dup()/dup2() tracking**: If a process duplicates a uinput file descriptor, the shim loses tracking of the new fd. This is uncommon in practice.
-- **Networking for multiple instances**: With `--network=host`, all instances share the host network. Sunshine uses ports 47984-48110 by default. For multiple instances, configure each Sunshine to use different port ranges, or use bridge networking with port mapping.
-- **Steam first launch**: The first boot downloads Steam (~1.5GB). Use persistent volumes to avoid re-downloading on container recreation.
+- **dup()/dup2() tracking**: If a process duplicates a uinput file descriptor, the shim loses tracking of the new fd. The mknod daemon still picks up the device via inotify, but the `phys` field won't be tagged. This is uncommon in practice.
+- **Networking for multiple instances**: With `--network=host`, all instances share the host network. Sunshine uses ports 47984-48110 by default. For multiple instances, configure each Sunshine to use different port ranges, or use bridge networking with explicit port mapping.
 - **Fedora version**: The Bazzite COPRs (Valve Mesa, PipeWire) target specific Fedora versions. If the COPR doesn't have builds for your Fedora version, the package installation will fail. Check COPR availability before changing `FEDORA_VERSION`.
+- **NVENC**: The NVENC encoder code is patched at build time to compile against newer nv-codec-headers. This is a no-op on AMD GPUs (NVENC runtime detection gracefully fails without an NVIDIA GPU).

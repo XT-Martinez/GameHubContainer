@@ -1,19 +1,28 @@
 [Unit]
 Description=Sunshine Game Streaming Server
-After=gaming-session.service
+After=gaming-session.service device-permissions.service
 Wants=gaming-session.service
+# Restart sunshine when gamescope session restarts
+BindsTo=gaming-session.service
 
 [Service]
 Type=simple
+# Allow wait-for-wayland.sh full 60s before systemd kills it
+TimeoutStartSec=90
 ExecStartPre=/usr/local/bin/wait-for-wayland.sh
 ExecStartPre=/bin/bash -c 'test -f %h/.config/sunshine/sunshine.conf || (mkdir -p %h/.config/sunshine && cp /etc/sunshine/sunshine.conf.default %h/.config/sunshine/sunshine.conf)'
 ExecStart=/usr/bin/sunshine
 Restart=on-failure
 RestartSec=5
+# Don't restart forever if gamescope keeps dying
+StartLimitIntervalSec=120
+StartLimitBurst=5
 
 Environment=HOME=/home/gamer
 Environment=USER=gamer
 Environment=XDG_SESSION_TYPE=wayland
+# Set explicitly to avoid race with gaming-session.service's set-environment
+Environment=LD_PRELOAD=/usr/lib64/libuinput_shim.so
 
 # Populated by wait-for-wayland.sh
 EnvironmentFile=-%t/sunshine-wayland.env

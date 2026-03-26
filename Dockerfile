@@ -89,7 +89,7 @@ RUN --mount=type=cache,dst=/var/cache/libdnf5 \
     systemd-devel systemd-udev \
     wayland-devel wayland-protocols-devel
 
-COPY sunshine/ /build/sunshine/
+COPY Sunshine/ /build/sunshine/
 WORKDIR /build/sunshine
 
 ENV CC=gcc-14 CXX=g++-14
@@ -162,17 +162,29 @@ RUN --mount=type=cache,dst=/var/cache/libdnf5 \
         "*bazzite*".priority=1 \
         "*terra*".priority=3 \
         "*rpmfusion*".priority=5 \
-        "*rpmfusion*".exclude="mesa-*" \
+        "*rpmfusion*".exclude="mesa-dri-drivers,mesa-vulkan-drivers,mesa-va-drivers,mesa-vdpau-drivers,mesa-libEGL,mesa-libGL,mesa-libgbm,mesa-libglapi,mesa-filesystem" \
         "*fedora*".exclude="mesa-*"
 
 # ── Valve's patched Mesa (AMD) ────────────────────────────────
+# Base Mesa from Bazzite COPR (patched for gamescope), then swap vulkan
+# drivers with freeworld from RPM Fusion for patent-encumbered codecs
+# (H.264/H.265 encode) needed for Vulkan Video Encode and VAAPI.
+#
+# mesa-vulkan-drivers-freeworld Conflicts: mesa-vulkan-drivers, so a plain
+# install silently skips the x86_64 freeworld (only i686 installs since
+# there's no i686 base to conflict with). dnf5 swap handles this correctly.
 RUN --mount=type=cache,dst=/var/cache/libdnf5 \
     dnf5 -y install \
         mesa-dri-drivers \
         mesa-vulkan-drivers \
         mesa-libEGL \
         mesa-libGL \
-        mesa-libgbm
+        mesa-libgbm && \
+    dnf5 -y install --skip-unavailable \
+        mesa-va-drivers-freeworld && \
+    dnf5 -y swap \
+        mesa-vulkan-drivers mesa-vulkan-drivers-freeworld || \
+        echo "WARNING: vulkan freeworld swap failed — H.264/H.265 Vulkan Video Encode unavailable"
 
 # ── Valve's patched PipeWire + WirePlumber ────────────────────
 RUN --mount=type=cache,dst=/var/cache/libdnf5 \
@@ -228,8 +240,12 @@ RUN --mount=type=cache,dst=/var/cache/libdnf5 \
         # Display control
         wlr-randr \
         # System
-        systemd \
-        which evtest \
+        systemd acl \
+        which evtest procps-ng util-linux \
+        # switcherooctl needs PyGObject
+        python3-gobject \
+        # Steam runtime needs locale and hw detection
+        glibc-langpack-en pciutils \
         # SDL controller database
         && \
     mkdir -p /usr/share/sdl/ && \
@@ -249,6 +265,25 @@ COPY --from=shim-builder /build/libuinput_shim.so /usr/lib64/libuinput_shim.so
 COPY --from=shim-builder /build/input-mknod-daemon /usr/local/bin/input-mknod-daemon
 COPY container-input-shim/99-sunshine-container-ignore.rules /etc/udev/rules.d/
 
+# ── SteamOS compatibility stubs ───────────────────────────────
+# Steam in SteamOS mode (-steamos3 -steampal -steamdeck) tries to call
+# SteamOS-specific helpers that don't exist in a container. Missing helpers
+# cause Steam to error-exit, triggering gamescope-session-plus's short-session
+# counter, which resets Steam config at 5 failures — creating a 20+ minute
+# crash loop on startup. These no-op stubs prevent that.
+RUN mkdir -p /usr/bin/steamos-polkit-helpers && \
+    for stub in \
+        /usr/bin/steamos-polkit-helpers/jupiter-dock-updater \
+        /usr/bin/steamos-polkit-helpers/steamos-update \
+        /usr/bin/steamos-polkit-helpers/steamos-factory-reset-config \
+        /usr/bin/steamos-polkit-helpers/steamos-select-branch \
+    ; do \
+        printf '#!/bin/sh\nexit 0\n' > "$stub" && chmod +x "$stub"; \
+    done && \
+    # lsb_release is called by Steam but not installed
+    printf '#!/bin/sh\necho "Fedora"\n' > /usr/bin/lsb_release && \
+    chmod +x /usr/bin/lsb_release
+
 # ── User and session setup ────────────────────────────────────
 
 # Create gaming user
@@ -257,18 +292,29 @@ RUN useradd -m -u ${GAMER_UID} -G video,render,input gamer && \
     mkdir -p /var/lib/systemd/linger && \
     touch /var/lib/systemd/linger/gamer
 
-# Install service files and scripts
-COPY services/ /etc/systemd/user/
+# Install user service files and scripts
+COPY services/gaming-session.service services/sunshine.service \
+    /etc/systemd/user/
 COPY scripts/ /usr/local/bin/
 RUN chmod +x /usr/local/bin/*.sh
+
+# Install system services (need real root for mknod/chmod in rootless podman)
+COPY services/device-permissions.service /etc/systemd/system/device-permissions.service
+COPY services/input-mknod.service /etc/systemd/system/input-mknod.service
+RUN mkdir -p /etc/systemd/system/multi-user.target.wants && \
+    ln -sf /etc/systemd/system/device-permissions.service \
+        /etc/systemd/system/multi-user.target.wants/device-permissions.service && \
+    ln -sf /etc/systemd/system/input-mknod.service \
+        /etc/systemd/system/multi-user.target.wants/input-mknod.service
 
 # Default Sunshine config (system location — copied to user dir on first start)
 COPY configs/sunshine.conf /etc/sunshine/sunshine.conf.default
 
 # Enable user services globally
+# sunshine.service must be enabled (is-enabled=enabled) because gamescope-session-plus
+# checks this before running "systemctl restart --user sunshine.service".
+# wait-for-wayland.sh prevents sunshine from connecting before gamescope is ready.
 RUN mkdir -p /etc/systemd/user/default.target.wants && \
-    ln -sf /etc/systemd/user/input-mknod.service \
-        /etc/systemd/user/default.target.wants/input-mknod.service && \
     ln -sf /etc/systemd/user/gaming-session.service \
         /etc/systemd/user/default.target.wants/gaming-session.service && \
     ln -sf /etc/systemd/user/sunshine.service \
@@ -285,13 +331,28 @@ RUN systemctl mask \
         serial-getty@.service \
         systemd-udev-trigger.service \
         fstrim.timer && \
-    # Ensure tmpfiles creates XDG_RUNTIME_DIR
-    printf 'd /run/user/%s 0700 gamer gamer -\n' "${GAMER_UID}" \
-        > /etc/tmpfiles.d/gaming-session.conf
+    # Ensure tmpfiles creates XDG_RUNTIME_DIR and fixes volume mount ownership
+    printf '%s\n' \
+        "d /run/user/${GAMER_UID} 0700 gamer gamer -" \
+        "d /home/gamer/.steam 0755 gamer gamer -" \
+        "d /home/gamer/.steam/root 0755 gamer gamer -" \
+        "d /home/gamer/.steam/root/config 0755 gamer gamer -" \
+        "d /home/gamer/.local 0755 gamer gamer -" \
+        "d /home/gamer/.local/share 0755 gamer gamer -" \
+        "d /home/gamer/.local/share/Steam 0755 gamer gamer -" \
+        "d /home/gamer/.config 0755 gamer gamer -" \
+        "d /home/gamer/.config/sunshine 0755 gamer gamer -" \
+        > /etc/tmpfiles.d/gaming-session.conf && \
+    # Fix DRI and uinput device permissions at boot
+    # (container user may not match host group IDs)
+    printf '%s\n' \
+        'z /dev/dri/card* 0666 root root -' \
+        'z /dev/dri/renderD* 0666 root root -' \
+        'z /dev/uinput 0666 root root -' \
+        > /etc/tmpfiles.d/device-permissions.conf
 
 # ── Environment ──────────────────────────────────────────────
 
-ENV LD_PRELOAD=/usr/lib64/libuinput_shim.so
 ENV CONTAINER_ID=default
 
 # Podman systemd container

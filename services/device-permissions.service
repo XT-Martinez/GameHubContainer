@@ -1,0 +1,13 @@
+[Unit]
+Description=Fix container device permissions for uinput/uhid
+DefaultDependencies=no
+After=systemd-tmpfiles-setup.service
+Before=systemd-user-sessions.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/fix-device-permissions.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
