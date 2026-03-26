@@ -65,9 +65,15 @@ The daemon also:
 
 **How host Steam is distinguished from container Steam**: Both create devices named "Steam Virtual Gamepad". The shim rewrites the `phys` field on ALL uinput devices created inside the container, regardless of which application creates them. Host Steam's devices have a different `phys`, so the host udev rule doesn't match them.
 
-### Resolution Matching
+### Resolution and Refresh Rate
 
-A default Sunshine configuration is included that automatically aligns gamescope's output resolution with the Moonlight client's request. When a stream starts, Sunshine runs `set-resolution.sh` as a prep command, which uses `wlr-randr` to set gamescope's output to the client's requested width, height, and refresh rate via the `SUNSHINE_CLIENT_WIDTH`, `SUNSHINE_CLIENT_HEIGHT`, and `SUNSHINE_CLIENT_FPS` environment variables.
+Gamescope's headless backend does not support dynamic resolution changes (xrandr and wlr-randr mode switching are ignored). Instead, the output resolution is set at container startup via environment variables:
+
+- `SCREEN_WIDTH` (default: 1920) — gamescope output width
+- `SCREEN_HEIGHT` (default: 1080) — gamescope output height
+- `CUSTOM_REFRESH_RATES` (default: 60,90,120) — available refresh rates
+
+To stream at a different resolution, restart the container with different values (e.g., `-e SCREEN_WIDTH=2560 -e SCREEN_HEIGHT=1440`).
 
 ## Prerequisites
 
@@ -75,7 +81,9 @@ A default Sunshine configuration is included that automatically aligns gamescope
 
 #### 1. Install the udev rule
 
-This prevents the host desktop from consuming virtual input devices created by containers:
+This rule does two things:
+1. Prevents the host desktop from consuming virtual input devices created by containers
+2. Sets `/dev/uinput` and `/dev/uhid` to world-writable (needed for container access)
 
 ```bash
 sudo cp container-input-shim/99-sunshine-container-ignore.rules /etc/udev/rules.d/
@@ -83,11 +91,10 @@ sudo udevadm control --reload-rules
 sudo udevadm trigger
 ```
 
-**What this does**: Any input device with `phys` matching `container-*` gets:
-- `LIBINPUT_IGNORE_DEVICE=1` — libinput (and thus your desktop compositor) ignores it
-- `ID_INPUT=""` — systemd-logind and other consumers don't treat it as host input
-
-**What this does NOT do**: It does not remove the device from the kernel. The device still exists in sysfs and can be opened by processes that know its path. This is by design — the container needs kernel-level devices for Steam/SDL to work.
+**What this does**:
+- `/dev/uinput` and `/dev/uhid` set to `MODE="0666"` — allows the container's non-root user to create virtual input devices
+- Any input device with `phys` matching `container-*` gets `LIBINPUT_IGNORE_DEVICE=1` — libinput (and thus your desktop compositor) ignores it
+- Container-tagged devices also get `ID_INPUT=""` — systemd-logind and other consumers don't treat them as host input
 
 #### 2. Add your user to the `input` group
 
@@ -127,9 +134,10 @@ Subsequent builds are faster due to Docker layer caching.
 ### Single instance
 
 ```bash
-podman run -d \
+sudo podman run -d \
     --name sunshine \
     --systemd=true \
+    --shm-size=1g \
     --cap-add SYS_ADMIN \
     --cap-add MKNOD \
     --device /dev/dri \
@@ -141,17 +149,24 @@ podman run -d \
     -v sunshine-local:/home/gamer/.local/share/Steam \
     -v sunshine-config:/home/gamer/.config/sunshine \
     -e CONTAINER_ID=sunshine-1 \
+    -e SCREEN_WIDTH=1920 \
+    -e SCREEN_HEIGHT=1080 \
     --network=host \
     --security-opt label=disable \
-    sunshine-gamescope:latest
+    gamehub-container:latest
 ```
 
 ### Multiple instances
 
+Each instance needs a unique `CONTAINER_ID`, unique Sunshine port range, and separate storage volumes.
+
+**Important**: Sunshine's internal ports must match the external ports. Each instance sets `port = <HTTPS_PORT>` in its sunshine.conf. Sunshine derives all other ports from this base (HTTP = port - 5, RTSP = port + 21, etc.). Use 1:1 port mapping so Moonlight can reach all ports correctly during pairing.
+
 ```bash
-# Instance 1
-podman run -d --name sunshine-1 \
+# Instance 1 — default ports (47984-48010)
+sudo podman run -d --name sunshine-1 \
     --systemd=true \
+    --shm-size=1g \
     --cap-add SYS_ADMIN --cap-add MKNOD \
     --device /dev/dri --device /dev/uinput \
     --device-cgroup-rule='c 13:* rmw' \
@@ -161,13 +176,18 @@ podman run -d --name sunshine-1 \
     -v s1-local:/home/gamer/.local/share/Steam \
     -v s1-config:/home/gamer/.config/sunshine \
     -e CONTAINER_ID=sunshine-1 \
+    -e SCREEN_WIDTH=1920 \
+    -e SCREEN_HEIGHT=1080 \
     --network=host \
     --security-opt label=disable \
-    sunshine-gamescope:latest
+    gamehub-container:latest
 
-# Instance 2
-podman run -d --name sunshine-2 \
+# Instance 2 — port range 57984-58010
+# Set port=57989 in sunshine.conf (first run creates it from default,
+# then change via web UI at https://<host-ip>:57990 or edit the volume)
+sudo podman run -d --name sunshine-2 \
     --systemd=true \
+    --shm-size=1g \
     --cap-add SYS_ADMIN --cap-add MKNOD \
     --device /dev/dri --device /dev/uinput \
     --device-cgroup-rule='c 13:* rmw' \
@@ -177,18 +197,22 @@ podman run -d --name sunshine-2 \
     -v s2-local:/home/gamer/.local/share/Steam \
     -v s2-config:/home/gamer/.config/sunshine \
     -e CONTAINER_ID=sunshine-2 \
-    -p 57984:47984/tcp \
-    -p 57989:47989/tcp \
-    -p 57990:47990/tcp \
-    -p 58010:48010/tcp \
-    -p 57998:47998/udp \
-    -p 57999:47999/udp \
-    -p 58000:48000/udp \
+    -e SCREEN_WIDTH=1920 \
+    -e SCREEN_HEIGHT=1080 \
+    -p 57984:57984/tcp \
+    -p 57989:57989/tcp \
+    -p 57990:57990/tcp \
+    -p 58010:58010/tcp \
+    -p 57998:57998/udp \
+    -p 57999:57999/udp \
+    -p 58000:58000/udp \
     --security-opt label=disable \
-    sunshine-gamescope:latest
+    gamehub-container:latest
 ```
 
 Each instance has isolated input devices — a gamepad connected to instance 1 is invisible to instance 2.
+
+In Moonlight, add instance 2 as `<host-ip>:57989`.
 
 ### Using Compose
 
@@ -199,65 +223,57 @@ podman compose logs -f
 
 ### First run
 
-1. Wait for Steam to finish bootstrapping (a pre-cached bootstrap archive is included in the image, so this is mostly local extraction rather than a network download)
-2. Access the Sunshine web UI at `https://<host-ip>:47990`
+1. Wait for Steam to finish bootstrapping (~1-2 minutes). A pre-cached bootstrap archive is included in the image. The gaming session may restart once during initial Steam setup — this is normal.
+2. Access the Sunshine web UI at `https://<host-ip>:47990` (or the instance's configured web UI port)
 3. Set up a username and password
-4. Pair with Moonlight on your client device
+4. For multi-instance setups: set `port = <HTTPS_PORT>` in the Sunshine config (Configuration > Network) to match the external port mapping
+5. Pair with Moonlight on your client device
 
-## Rootless Podman
+## Rootful vs Rootless Podman
 
-This container works with rootless Podman with some caveats:
+**Rootful podman (`sudo podman run`) is recommended** for multi-instance setups. The input isolation system requires `mknod` to create device nodes in the container's private `/dev/input/` tmpfs, and the Linux kernel blocks `mknod` for character devices in user namespaces — even with `--privileged`.
 
-### mknod in rootless containers
+### What works in rootless mode
 
-The mknod daemon calls `mknod` to create device nodes in the container's `/dev/input/`. In rootless Podman:
+| Feature | Rootless | Rootful |
+|---|---|---|
+| Gamescope scanout capture | Yes | Yes |
+| Vulkan/VAAPI encoding | Yes | Yes |
+| Steam + Big Picture | Yes | Yes |
+| Virtual mouse/keyboard (uinput) | Yes (with host udev rule) | Yes |
+| Virtual gamepad (uinput) | Yes (with host udev rule) | Yes |
+| PS5 DualSense (UHID) | Yes (with host udev rule) | Yes |
+| Input isolation (`/dev/input/` tmpfs) | **No** — `mknod` fails | Yes |
+| Multi-instance input isolation | **No** | Yes |
 
-- `mknod` creates the device node file inside the user namespace (this always works)
-- **Opening** the device requires the cgroup device controller to allow it
-- `--device-cgroup-rule='c 13:* rmw'` grants access to input devices (major 13)
+### Rootless single-instance workaround
 
-If `mknod` fails with `EPERM`, use `--privileged`:
-
-```bash
-podman run --privileged ...
-```
-
-`--privileged` in rootless Podman is **not the same as root** — you're still in a user namespace. It relaxes capability and device cgroup restrictions within that namespace, which is sufficient for `mknod` to work.
-
-### Requirements for rootless operation
-
-| Requirement | How to satisfy |
-|---|---|
-| `/dev/uinput` access | Host user in `input` group |
-| `/dev/dri` access | Host user in `video` + `render` groups |
-| `mknod` inside container | `--cap-add MKNOD` + `--device-cgroup-rule='c 13:* rmw'` (or `--privileged`) |
-| systemd as PID 1 | Podman auto-detects with `--systemd=true` |
-
-### If --privileged is needed
-
-If the minimal capability set doesn't work on your system, `--privileged` is the escape hatch:
+For a single instance without input isolation, you can run rootless with `--privileged` and WITHOUT the `/dev/input/` tmpfs. All host input devices will be visible inside the container, but the udev rule prevents the host from consuming container-created devices:
 
 ```bash
 podman run -d \
     --name sunshine \
     --systemd=true \
+    --shm-size=1g \
     --privileged \
     --device /dev/dri \
     --device /dev/uinput \
-    --tmpfs /dev/input:rw,noexec,nosuid,size=1m \
     -v /sys:/sys:ro \
     -e CONTAINER_ID=sunshine-1 \
+    -e SCREEN_WIDTH=1920 \
+    -e SCREEN_HEIGHT=1080 \
     --network=host \
-    sunshine-gamescope:latest
+    --security-opt label=disable \
+    gamehub-container:latest
 ```
 
-This grants all capabilities within the user namespace and disables device cgroup filtering. In rootless mode, this is safe — the container still cannot escape the user namespace boundary.
+`--privileged` in rootless Podman is **not the same as root** — you're still in a user namespace. It relaxes capability and device cgroup restrictions within that namespace.
 
 ## Architecture
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  Container (rootless Podman)                                 │
+│  Container (rootful Podman recommended for multi-instance)    │
 │                                                              │
 │  LD_PRELOAD=libuinput_shim.so                               │
 │  CONTAINER_ID=sunshine-1                                     │
@@ -313,7 +329,11 @@ Host udev:   ATTR{phys}=="container-*" →
 
 ## Known Limitations
 
+- **Rootless podman + input isolation**: The kernel blocks `mknod` for character devices in user namespaces. The `input-mknod-daemon` cannot create `/dev/input/` device nodes in rootless mode. Use rootful podman (`sudo podman run`) for multi-instance input isolation.
+- **No dynamic resolution**: Gamescope's headless backend does not support resolution changes after startup (xrandr and wlr-randr mode switching are ignored). Set `SCREEN_WIDTH`/`SCREEN_HEIGHT` at container start.
+- **Port mapping and pairing**: Sunshine's internal ports must match external ports for Moonlight pairing to work. Use 1:1 port mapping (e.g., `-p 57989:57989`) and set `port = <HTTPS_PORT>` in sunshine.conf. NAT-style mapping (e.g., `57989:47989`) causes "certificate mismatch" errors during pairing.
+- **Steam startup**: Steam in SteamOS mode may restart once during initial setup (~1-2 min). SteamOS compatibility stubs are included to prevent extended crash loops, but the first session restart is normal.
 - **dup()/dup2() tracking**: If a process duplicates a uinput file descriptor, the shim loses tracking of the new fd. The mknod daemon still picks up the device via inotify, but the `phys` field won't be tagged. This is uncommon in practice.
-- **Networking for multiple instances**: With `--network=host`, all instances share the host network. Sunshine uses ports 47984-48110 by default. For multiple instances, configure each Sunshine to use different port ranges, or use bridge networking with explicit port mapping.
+- **Networking for multiple instances**: With `--network=host`, all instances share the host network. For multiple instances, configure each Sunshine with a different `port` value and use bridge networking with explicit port mapping.
 - **Fedora version**: The Bazzite COPRs (Valve Mesa, PipeWire) target specific Fedora versions. If the COPR doesn't have builds for your Fedora version, the package installation will fail. Check COPR availability before changing `FEDORA_VERSION`.
 - **NVENC**: The NVENC encoder code is patched at build time to compile against newer nv-codec-headers. This is a no-op on AMD GPUs (NVENC runtime detection gracefully fails without an NVIDIA GPU).
