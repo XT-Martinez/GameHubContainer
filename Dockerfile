@@ -214,7 +214,16 @@ RUN --mount=type=cache,dst=/var/cache/libdnf5 \
         gamescope-session-steam
 
 # ── Steam ─────────────────────────────────────────────────────
+# Steam's 32-bit updater binary needs i686 Mesa GL libraries to render its
+# update UI (fonts + GL context). The "*fedora*".exclude="mesa-*" above blocks
+# ALL mesa packages including i686, so we explicitly install the 32-bit ones
+# first with the exclude disabled.
 RUN --mount=type=cache,dst=/var/cache/libdnf5 \
+    dnf5 -y --setopt="*fedora*".exclude="" install \
+        mesa-libGL.i686 \
+        mesa-libEGL.i686 \
+        mesa-dri-drivers.i686 \
+        mesa-libgbm.i686 && \
     dnf5 --enable-repo=terra -y --setopt=install_weak_deps=False install \
         steam
 
@@ -310,6 +319,19 @@ RUN mkdir -p /etc/systemd/system/multi-user.target.wants && \
 # Default Sunshine config (system location — copied to user dir on first start)
 COPY configs/sunshine.conf /etc/sunshine/sunshine.conf.default
 
+# Add restart drop-in for gamescope-session-plus (vendor unit has no Restart=).
+# Steam may need several restarts to bootstrap on fresh volumes.
+RUN mkdir -p /etc/systemd/user/gamescope-session-plus@steam.service.d && \
+    printf '%s\n' \
+        '[Service]' \
+        'Restart=on-failure' \
+        'RestartSec=5' \
+        '' \
+        '[Unit]' \
+        'StartLimitIntervalSec=300' \
+        'StartLimitBurst=10' \
+        > /etc/systemd/user/gamescope-session-plus@steam.service.d/restart.conf
+
 # Enable user services globally
 # sunshine.service must be enabled (is-enabled=enabled) because gamescope-session-plus
 # checks this before running "systemctl restart --user sunshine.service".
@@ -335,11 +357,12 @@ RUN systemctl mask \
     printf '%s\n' \
         "d /run/user/${GAMER_UID} 0700 gamer gamer -" \
         "d /home/gamer/.steam 0755 gamer gamer -" \
-        "d /home/gamer/.steam/root 0755 gamer gamer -" \
-        "d /home/gamer/.steam/root/config 0755 gamer gamer -" \
         "d /home/gamer/.local 0755 gamer gamer -" \
         "d /home/gamer/.local/share 0755 gamer gamer -" \
         "d /home/gamer/.local/share/Steam 0755 gamer gamer -" \
+        "d /home/gamer/.local/share/Steam/config 0755 gamer gamer -" \
+        "L+ /home/gamer/.steam/root - - - - /home/gamer/.local/share/Steam" \
+        "L+ /home/gamer/.steam/steam - - - - /home/gamer/.local/share/Steam" \
         "d /home/gamer/.config 0755 gamer gamer -" \
         "d /home/gamer/.config/sunshine 0755 gamer gamer -" \
         > /etc/tmpfiles.d/gaming-session.conf && \
@@ -354,6 +377,10 @@ RUN systemctl mask \
 # ── Environment ──────────────────────────────────────────────
 
 ENV CONTAINER_ID=default
+# Sunshine base port (controls all Sunshine ports: HTTP, HTTPS, RTSP, video, audio, etc.)
+# Set to match the external port mapping for Moonlight pairing to work correctly.
+# Leave empty to use Sunshine's default (47989).
+ENV SUNSHINE_PORT=
 
 # Podman systemd container
 STOPSIGNAL SIGRTMIN+3

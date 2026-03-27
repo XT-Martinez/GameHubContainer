@@ -28,7 +28,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/inotify.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
 #include <unistd.h>
@@ -126,7 +125,7 @@ static void create_dev_node(const char *devname) {
     /* Remove stale node if present */
     unlink(nodepath);
 
-    if (mknod(nodepath, S_IFCHR | 0660, makedev(maj, min)) == 0) {
+    if (mknod(nodepath, S_IFCHR | 0666, makedev(maj, min)) == 0) {
         DBG("created %s (%u:%u)", nodepath, maj, min);
     } else {
         DBG("mknod %s failed: %s", nodepath, strerror(errno));
@@ -165,66 +164,92 @@ static void scan_existing_devices(void) {
     closedir(d);
 }
 
+/* ── Polling scan ─────────────────────────────────────────── */
+
+/*
+ * Scan /sys/class/input/ and create/remove device nodes as needed.
+ * Returns the number of container devices currently present.
+ *
+ * We also clean up stale nodes in /dev/input/ that no longer have
+ * a corresponding sysfs entry.
+ */
+static int poll_and_sync(void) {
+    int count = 0;
+
+    /* Pass 1: create nodes for new container devices */
+    DIR *d = opendir(SYSFS_INPUT);
+    if (!d) {
+        ERR("cannot open %s: %s", SYSFS_INPUT, strerror(errno));
+        return 0;
+    }
+
+    struct dirent *ent;
+    while ((ent = readdir(d))) {
+        if (!is_input_device(ent->d_name))
+            continue;
+        if (!is_container_device(ent->d_name))
+            continue;
+
+        count++;
+
+        /* Check if node already exists */
+        char nodepath[PATH_MAX];
+        snprintf(nodepath, sizeof(nodepath), DEV_INPUT "/%s", ent->d_name);
+        struct stat st;
+        if (stat(nodepath, &st) == 0)
+            continue;   /* already created */
+
+        DBG("new container device: %s", ent->d_name);
+        create_dev_node(ent->d_name);
+    }
+    closedir(d);
+
+    /* Pass 2: remove stale nodes whose sysfs entry is gone */
+    d = opendir(DEV_INPUT);
+    if (d) {
+        while ((ent = readdir(d))) {
+            if (!is_input_device(ent->d_name))
+                continue;
+
+            char syspath[PATH_MAX];
+            snprintf(syspath, sizeof(syspath),
+                     SYSFS_INPUT "/%s", ent->d_name);
+            struct stat st;
+            if (stat(syspath, &st) != 0) {
+                DBG("stale device gone: %s", ent->d_name);
+                remove_dev_node(ent->d_name);
+            }
+        }
+        closedir(d);
+    }
+
+    return count;
+}
+
 /* ── Main loop ────────────────────────────────────────────── */
 
+/* Poll interval in microseconds (500ms) */
+#define POLL_INTERVAL_USEC  500000
+
 int main(void) {
+    /* Clear umask so mknod(0666) creates world-readable nodes */
+    umask(0);
+
     const char *dbg = getenv("UINPUT_SHIM_DEBUG");
     debug_enabled = (dbg && dbg[0] == '1');
 
-    DBG("starting — watching %s for %s* devices", SYSFS_INPUT, TAG_PREFIX);
+    fprintf(stderr, "[input-mknod] starting — polling %s for %s* devices\n",
+            SYSFS_INPUT, TAG_PREFIX);
 
-    /* Handle any devices that already exist */
-    scan_existing_devices();
+    /* Initial scan */
+    int n = poll_and_sync();
+    fprintf(stderr, "[input-mknod] initial scan: %d container device(s)\n", n);
 
-    /* Set up inotify */
-    int ifd = inotify_init1(IN_CLOEXEC);
-    if (ifd < 0) {
-        ERR("inotify_init1: %s", strerror(errno));
-        return 1;
-    }
-
-    int wd = inotify_add_watch(ifd, SYSFS_INPUT, IN_CREATE | IN_DELETE);
-    if (wd < 0) {
-        ERR("inotify_add_watch(%s): %s", SYSFS_INPUT, strerror(errno));
-        return 1;
-    }
-
-    DBG("watching for events...");
-
-    /* Event buffer — aligned for inotify_event */
-    char buf[4096]
-        __attribute__((aligned(__alignof__(struct inotify_event))));
-
+    /* Poll loop */
     for (;;) {
-        ssize_t len = read(ifd, buf, sizeof(buf));
-        if (len < 0) {
-            if (errno == EINTR)
-                continue;
-            ERR("read: %s", strerror(errno));
-            break;
-        }
-        if (len == 0)
-            break;
-
-        for (char *ptr = buf; ptr < buf + len; ) {
-            struct inotify_event *ev = (struct inotify_event *)ptr;
-
-            if (ev->len > 0 && is_input_device(ev->name)) {
-                if (ev->mask & IN_CREATE) {
-                    DBG("new device: %s", ev->name);
-                    if (is_container_device(ev->name))
-                        create_dev_node(ev->name);
-                } else if (ev->mask & IN_DELETE) {
-                    /* Unconditionally remove — our /dev/input is
-                     * a private tmpfs, so anything in it is ours */
-                    remove_dev_node(ev->name);
-                }
-            }
-
-            ptr += sizeof(struct inotify_event) + ev->len;
-        }
+        usleep(POLL_INTERVAL_USEC);
+        poll_and_sync();
     }
 
-    close(ifd);
     return 0;
 }

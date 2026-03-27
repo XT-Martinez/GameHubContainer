@@ -1,9 +1,12 @@
 [Unit]
 Description=Sunshine Game Streaming Server
-After=gaming-session.service device-permissions.service
+After=gaming-session.service device-permissions.service gamescope-session-plus@steam.service
 Wants=gaming-session.service
 # Restart sunshine when gamescope session restarts
-BindsTo=gaming-session.service
+BindsTo=gamescope-session-plus@steam.service
+# Don't restart forever if gamescope keeps dying
+StartLimitIntervalSec=120
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -11,12 +14,9 @@ Type=simple
 TimeoutStartSec=90
 ExecStartPre=/usr/local/bin/wait-for-wayland.sh
 ExecStartPre=/bin/bash -c 'test -f %h/.config/sunshine/sunshine.conf || (mkdir -p %h/.config/sunshine && cp /etc/sunshine/sunshine.conf.default %h/.config/sunshine/sunshine.conf)'
-ExecStart=/usr/bin/sunshine
+ExecStart=/bin/bash -c 'exec /usr/bin/sunshine ${SUNSHINE_PORT:+port=$SUNSHINE_PORT}'
 Restart=on-failure
 RestartSec=5
-# Don't restart forever if gamescope keeps dying
-StartLimitIntervalSec=120
-StartLimitBurst=5
 
 Environment=HOME=/home/gamer
 Environment=USER=gamer

@@ -54,13 +54,15 @@ The shim is purely a tagger — it does not create device nodes or touch the fil
 
 A lightweight sidecar daemon that **creates `/dev/input/` device nodes** for container-tagged devices.
 
-Each container runs with a private `/dev/input/` tmpfs that starts empty. The daemon watches `/sys/class/input/` via inotify and, for every new `eventN` or `jsN` device whose `phys` field starts with `container-`, reads the major:minor numbers from sysfs and calls `mknod` to create the device node in `/dev/input/`.
+Each container runs with a private `/dev/input/` tmpfs that starts empty. The daemon polls `/sys/class/input/` every 500ms and, for every `eventN` or `jsN` device whose `phys` field starts with `container-`, reads the major:minor numbers from sysfs and calls `mknod` to create the device node in `/dev/input/` with world-readable permissions (0666).
 
-This split design solves the **UHID async problem**: when Inputtino creates a PS5 DualSense via UHID, the kernel's `hid-playstation` driver creates child input devices asynchronously (main controller, motion sensor, touchpad). The shim can't mknod these because they don't exist yet at `write()` time. The daemon watches for them via inotify and handles them as they appear.
+> **Why polling instead of inotify?** sysfs does not generate inotify `IN_CREATE`/`IN_DELETE` events for new directory entries. The daemon originally used inotify but it silently blocked forever. Polling at 500ms provides reliable detection with negligible CPU overhead.
+
+This split design solves the **UHID async problem**: when Inputtino creates a PS5 DualSense via UHID, the kernel's `hid-playstation` driver creates child input devices asynchronously (main controller, motion sensor, touchpad). The shim can't mknod these because they don't exist yet at `write()` time. The daemon catches them on the next poll cycle.
 
 The daemon also:
 - **Scans existing devices at startup** in case it starts after some devices are already created
-- **Removes stale nodes** when devices are deleted from sysfs
+- **Removes stale nodes** when devices are deleted from sysfs (two-pass scan/cleanup)
 - **Handles all device types uniformly** — uinput, UHID, and any future device creation methods
 
 **How host Steam is distinguished from container Steam**: Both create devices named "Steam Virtual Gamepad". The shim rewrites the `phys` field on ALL uinput devices created inside the container, regardless of which application creates them. Host Steam's devices have a different `phys`, so the host udev rule doesn't match them.
@@ -143,8 +145,9 @@ sudo podman run -d \
     --device /dev/dri \
     --device /dev/uinput \
     --device-cgroup-rule='c 13:* rmw' \
-    --tmpfs /dev/input:rw,noexec,nosuid,size=1m \
+    --tmpfs /dev/input:rw,dev,nosuid,size=1m \
     -v /sys:/sys:ro \
+    -v /run/udev:/run/udev:ro \
     -v sunshine-steam:/home/gamer/.steam \
     -v sunshine-local:/home/gamer/.local/share/Steam \
     -v sunshine-config:/home/gamer/.config/sunshine \
@@ -160,7 +163,7 @@ sudo podman run -d \
 
 Each instance needs a unique `CONTAINER_ID`, unique Sunshine port range, and separate storage volumes.
 
-**Important**: Sunshine's internal ports must match the external ports. Each instance sets `port = <HTTPS_PORT>` in its sunshine.conf. Sunshine derives all other ports from this base (HTTP = port - 5, RTSP = port + 21, etc.). Use 1:1 port mapping so Moonlight can reach all ports correctly during pairing.
+**Important**: Sunshine's internal ports must match the external ports. Use the `SUNSHINE_PORT` environment variable to set the base port (e.g., `-e SUNSHINE_PORT=57989`). Sunshine derives all other ports from this base (HTTP = port - 5, RTSP = port + 21, etc.). Use 1:1 port mapping so Moonlight can reach all ports correctly during pairing.
 
 ```bash
 # Instance 1 — default ports (47984-48010)
@@ -170,8 +173,9 @@ sudo podman run -d --name sunshine-1 \
     --cap-add SYS_ADMIN --cap-add MKNOD \
     --device /dev/dri --device /dev/uinput \
     --device-cgroup-rule='c 13:* rmw' \
-    --tmpfs /dev/input:rw,noexec,nosuid,size=1m \
+    --tmpfs /dev/input:rw,dev,nosuid,size=1m \
     -v /sys:/sys:ro \
+    -v /run/udev:/run/udev:ro \
     -v s1-steam:/home/gamer/.steam \
     -v s1-local:/home/gamer/.local/share/Steam \
     -v s1-config:/home/gamer/.config/sunshine \
@@ -183,20 +187,21 @@ sudo podman run -d --name sunshine-1 \
     gamehub-container:latest
 
 # Instance 2 — port range 57984-58010
-# Set port=57989 in sunshine.conf (first run creates it from default,
-# then change via web UI at https://<host-ip>:57990 or edit the volume)
+# SUNSHINE_PORT sets the base port via command line (no need to edit sunshine.conf)
 sudo podman run -d --name sunshine-2 \
     --systemd=true \
     --shm-size=1g \
     --cap-add SYS_ADMIN --cap-add MKNOD \
     --device /dev/dri --device /dev/uinput \
     --device-cgroup-rule='c 13:* rmw' \
-    --tmpfs /dev/input:rw,noexec,nosuid,size=1m \
+    --tmpfs /dev/input:rw,dev,nosuid,size=1m \
     -v /sys:/sys:ro \
+    -v /run/udev:/run/udev:ro \
     -v s2-steam:/home/gamer/.steam \
     -v s2-local:/home/gamer/.local/share/Steam \
     -v s2-config:/home/gamer/.config/sunshine \
     -e CONTAINER_ID=sunshine-2 \
+    -e SUNSHINE_PORT=57989 \
     -e SCREEN_WIDTH=1920 \
     -e SCREEN_HEIGHT=1080 \
     -p 57984:57984/tcp \
@@ -226,7 +231,7 @@ podman compose logs -f
 1. Wait for Steam to finish bootstrapping (~1-2 minutes). A pre-cached bootstrap archive is included in the image. The gaming session may restart once during initial Steam setup — this is normal.
 2. Access the Sunshine web UI at `https://<host-ip>:47990` (or the instance's configured web UI port)
 3. Set up a username and password
-4. For multi-instance setups: set `port = <HTTPS_PORT>` in the Sunshine config (Configuration > Network) to match the external port mapping
+4. For multi-instance setups: set `SUNSHINE_PORT` env var to match the external port mapping (or set `port` in the Sunshine web UI under Configuration > Network)
 5. Pair with Moonlight on your client device
 
 ## Rootful vs Rootless Podman
@@ -259,6 +264,7 @@ podman run -d \
     --device /dev/dri \
     --device /dev/uinput \
     -v /sys:/sys:ro \
+    -v /run/udev:/run/udev:ro \
     -e CONTAINER_ID=sunshine-1 \
     -e SCREEN_WIDTH=1920 \
     -e SCREEN_HEIGHT=1080 \
@@ -305,17 +311,25 @@ podman run -d \
 │         │ devices appear in kernel                           │
 │         ▼                                                    │
 │  ┌──────────────────────────────────────────────────────┐   │
-│  │  input-mknod-daemon (sidecar, inotify)               │   │
-│  │  Watches /sys/class/input/ for new devices            │   │
+│  │  input-mknod-daemon (sidecar, polling 500ms)         │   │
+│  │  Polls /sys/class/input/ for new devices              │   │
 │  │  If phys matches "container-*":                       │   │
 │  │    → reads major:minor from sysfs                     │   │
-│  │    → mknod /dev/input/eventN                          │   │
+│  │    → mknod /dev/input/eventN (mode 0666)              │   │
 │  │  Handles uinput (sync) + UHID/PS5 (async) uniformly  │   │
 │  └──────────────────────────────────────────────────────┘   │
 │         │                                                    │
 │         ▼                                                    │
-│  /dev/input/ (private tmpfs — only this container's          │
-│               devices visible here)                          │
+│  /dev/input/ (private tmpfs with dev flag — only this        │
+│               container's devices visible here)              │
+│         │                                                    │
+│         ▼                                                    │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │  Gamescope headless libinput (path-based, no udev)   │   │
+│  │  Background thread polls /dev/input/ for container-*  │   │
+│  │  devices and dispatches events to wlserver            │   │
+│  │  (mouse, keyboard, touch → compositor input)          │   │
+│  └──────────────────────────────────────────────────────┘   │
 │                                                              │
 └──────────────────────────────────────────────────────────────┘
 
@@ -333,7 +347,10 @@ Host udev:   ATTR{phys}=="container-*" →
 - **No dynamic resolution**: Gamescope's headless backend does not support resolution changes after startup (xrandr and wlr-randr mode switching are ignored). Set `SCREEN_WIDTH`/`SCREEN_HEIGHT` at container start.
 - **Port mapping and pairing**: Sunshine's internal ports must match external ports for Moonlight pairing to work. Use 1:1 port mapping (e.g., `-p 57989:57989`) and set `port = <HTTPS_PORT>` in sunshine.conf. NAT-style mapping (e.g., `57989:47989`) causes "certificate mismatch" errors during pairing.
 - **Steam startup**: Steam in SteamOS mode may restart once during initial setup (~1-2 min). SteamOS compatibility stubs are included to prevent extended crash loops, but the first session restart is normal.
-- **dup()/dup2() tracking**: If a process duplicates a uinput file descriptor, the shim loses tracking of the new fd. The mknod daemon still picks up the device via inotify, but the `phys` field won't be tagged. This is uncommon in practice.
-- **Networking for multiple instances**: With `--network=host`, all instances share the host network. For multiple instances, configure each Sunshine with a different `port` value and use bridge networking with explicit port mapping.
+- **Gamepad input in headless mode**: Gamepads are not handled through gamescope's libinput path — they are read directly by Steam/SDL from `/dev/input/`. SDL needs udev for device discovery; without it, gamepads may not be detected. Investigation ongoing.
+- **tmpfs /dev/input/ requires `dev` flag**: The `--tmpfs /dev/input:rw,dev,...` mount must include `dev` explicitly. Without it, podman defaults to `nodev` which blocks all character device access on the tmpfs, even with correct file permissions.
+- **Host udev database required**: The container needs `-v /run/udev:/run/udev:ro` for libinput to discover input devices. Without the host's udev database, libinput cannot enumerate devices.
+- **dup()/dup2() tracking**: If a process duplicates a uinput file descriptor, the shim loses tracking of the new fd. The mknod daemon still picks up the device via polling, but the `phys` field won't be tagged. This is uncommon in practice.
+- **Networking for multiple instances**: With `--network=host`, all instances share the host network. For multiple instances, use `SUNSHINE_PORT` env var and bridge networking with explicit 1:1 port mapping.
 - **Fedora version**: The Bazzite COPRs (Valve Mesa, PipeWire) target specific Fedora versions. If the COPR doesn't have builds for your Fedora version, the package installation will fail. Check COPR availability before changing `FEDORA_VERSION`.
 - **NVENC**: The NVENC encoder code is patched at build time to compile against newer nv-codec-headers. This is a no-op on AMD GPUs (NVENC runtime detection gracefully fails without an NVIDIA GPU).

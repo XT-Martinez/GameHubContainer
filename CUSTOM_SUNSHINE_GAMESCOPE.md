@@ -246,7 +246,8 @@ endif()
 4. **Green screen after HDR toggle**: Commit-skip meant only 1 frame sent on static screen; if captured during transition, it was corrupted. Fixed with `force_send_frames = 3` grace period after (re)subscribe.
 5. **Slow HDR toggle (~2s freeze)**: Full Wayland teardown/reconnect on reinit. Fixed with persistent `connection_t` that survives across display reinit cycles + fast-path `gs_display_names()`.
 6. **Persistent connection + commit-skip interaction**: Re-subscribe on same Wayland client didn't reset commit tracking. Fixed by resetting `last_focus_commit_id`, `last_override_commit_id`, and `outstanding_buffer_ids` in subscribe handler.
-7. **Tiled/corrupted capture with Vulkan encoder (headless backend)**: Headless backend returned `UsesModifiers() = false`, causing output images to be created with `VK_IMAGE_TILING_OPTIMAL` but exported with `modifier = DRM_FORMAT_MOD_INVALID`. Sunshine's Vulkan encoder imported them as `VK_IMAGE_TILING_LINEAR` → GPU-tiled memory read as linear → corrupted tiles. Fixed by making `HeadlessBackend::UsesModifiers()` return `true` and `GetSupportedModifiers()` return `GetSupportedSampleModifiers()` (same pattern as DeferredBackend). VAAPI was unaffected because its EGL import path handles tiling transparently.
+7. **Tiled/corrupted capture with Vulkan encoder (headless backend)**: Headless backend returned `UsesModifiers() = false`, causing output images to be created with `VK_IMAGE_TILING_OPTIMAL` but exported with `modifier = DRM_FORMAT_MOD_INVALID`. Sunshine's Vulkan encoder imported them as `VK_IMAGE_TILING_LINEAR` → GPU-tiled memory read as linear → corrupted tiles. Fixed by making `HeadlessBackend::UsesModifiers()` return `true` and `GetSupportedModifiers()` return `DRM_FORMAT_MOD_LINEAR` for all formats (headless has no real display, so LINEAR is universally importable). Also required marking `CDeferredFb::Unwrap()` as `inline` in `DeferredBackend.h` to avoid multiple-definition linker errors when the header is included from multiple translation units.
+8. **No input in headless mode**: Gamescope's headless backend had no input device handling — `CLibInputHandler` was only initialized for the OpenVR backend, and the udev-based `libinput_udev_assign_seat()` requires a running udevd which containers don't have. Fixed by adding a path-based libinput context (`libinput_path_create_context`) to the headless backend with a background thread that polls `/dev/input/` for container-tagged devices and dynamically adds them via `libinput_path_add_device()`. Events (pointer motion, buttons, scroll, keyboard, touch) are dispatched directly to gamescope's `wlserver_*` functions. Uses `poll()` on the libinput fd for event-driven wakeup with 500ms fallback for device scanning.
 
 ---
 
@@ -280,7 +281,8 @@ endif()
 | `gamescope/src/wlserver.hpp` | Added scanout client struct + function decl |
 | `gamescope/src/wlserver.cpp` | Protocol handlers + send_frame (~200 lines added) |
 | `gamescope/src/steamcompmgr.cpp` | Rate limiter, commit-skip, scanout hook, NoFilter |
-| `gamescope/src/Backends/HeadlessBackend.cpp` | Enable DRM modifiers for headless output images (fixes tiled Vulkan capture) |
+| `gamescope/src/Backends/HeadlessBackend.cpp` | DRM modifiers (LINEAR) for headless output, path-based libinput for container input devices |
+| `gamescope/src/Backends/DeferredBackend.h` | Marked `CDeferredFb::Unwrap()` as `inline` (fixes ODR violation) |
 | `gamescope/src/pipewire.cpp` | Max framerate atomic + accessor |
 | `gamescope/src/pipewire.hpp` | pipewire_get_max_framerate() declaration |
 | `Sunshine/src/platform/linux/misc.cpp` | GAMESCOPE source registration |

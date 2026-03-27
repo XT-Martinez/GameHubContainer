@@ -37,6 +37,8 @@ systemctl --user set-environment \
     LD_PRELOAD=/usr/lib64/libuinput_shim.so \
     SCREEN_WIDTH="${SCREEN_WIDTH:-1920}" \
     SCREEN_HEIGHT="${SCREEN_HEIGHT:-1080}" \
-    CUSTOM_REFRESH_RATES="${CUSTOM_REFRESH_RATES:-60,90,120}"
+    CUSTOM_REFRESH_RATES="${CUSTOM_REFRESH_RATES:-60,90,120}" \
+    CONTAINER_ID="${CONTAINER_ID:-default}" \
+    ${SUNSHINE_PORT:+SUNSHINE_PORT=$SUNSHINE_PORT}
 
 exec gamescope-session-plus steam
