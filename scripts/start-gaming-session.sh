@@ -34,7 +34,6 @@ systemctl --user set-environment \
     LIBSEAT_BACKEND=noop \
     WLR_BACKENDS=headless \
     BACKEND=headless \
-    LD_PRELOAD=/usr/lib64/libuinput_shim.so \
     SCREEN_WIDTH="${SCREEN_WIDTH:-1920}" \
     SCREEN_HEIGHT="${SCREEN_HEIGHT:-1080}" \
     CUSTOM_REFRESH_RATES="${CUSTOM_REFRESH_RATES:-60,90,120}" \

@@ -310,11 +310,14 @@ RUN chmod +x /usr/local/bin/*.sh
 # Install system services (need real root for mknod/chmod in rootless podman)
 COPY services/device-permissions.service /etc/systemd/system/device-permissions.service
 COPY services/input-mknod.service /etc/systemd/system/input-mknod.service
+COPY services/container-env.service /etc/systemd/system/container-env.service
 RUN mkdir -p /etc/systemd/system/multi-user.target.wants && \
     ln -sf /etc/systemd/system/device-permissions.service \
         /etc/systemd/system/multi-user.target.wants/device-permissions.service && \
     ln -sf /etc/systemd/system/input-mknod.service \
-        /etc/systemd/system/multi-user.target.wants/input-mknod.service
+        /etc/systemd/system/multi-user.target.wants/input-mknod.service && \
+    ln -sf /etc/systemd/system/container-env.service \
+        /etc/systemd/system/multi-user.target.wants/container-env.service
 
 # Default Sunshine config (system location — copied to user dir on first start)
 COPY configs/sunshine.conf /etc/sunshine/sunshine.conf.default
@@ -372,7 +375,14 @@ RUN systemctl mask \
         'z /dev/dri/card* 0666 root root -' \
         'z /dev/dri/renderD* 0666 root root -' \
         'z /dev/uinput 0666 root root -' \
-        > /etc/tmpfiles.d/device-permissions.conf
+        > /etc/tmpfiles.d/device-permissions.conf && \
+    # Ensure /run/udev structure exists for fake udev DB (no udevd needed)
+    # The mknod daemon populates /run/udev/data/ and sends netlink events
+    printf '%s\n' \
+        'd /run/udev 0755 root root -' \
+        'd /run/udev/data 0755 root root -' \
+        'f /run/udev/control 0644 root root -' \
+        > /etc/tmpfiles.d/fake-udev.conf
 
 # ── Environment ──────────────────────────────────────────────
 

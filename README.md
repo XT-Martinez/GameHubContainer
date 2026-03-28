@@ -52,18 +52,25 @@ The shim is purely a tagger — it does not create device nodes or touch the fil
 
 #### Input Device Node Daemon (`input-mknod-daemon`)
 
-A lightweight sidecar daemon that **creates `/dev/input/` device nodes** for container-tagged devices.
+A lightweight sidecar daemon that **creates device nodes** and **populates the udev database** for container-tagged devices. It handles three responsibilities:
 
-Each container runs with a private `/dev/input/` tmpfs that starts empty. The daemon polls `/sys/class/input/` every 500ms and, for every `eventN` or `jsN` device whose `phys` field starts with `container-`, reads the major:minor numbers from sysfs and calls `mknod` to create the device node in `/dev/input/` with world-readable permissions (0666).
+1. **Device node creation**: Polls `/sys/class/input/` and `/sys/class/hidraw/` every 500ms. For devices whose `phys` starts with `container-`, creates `/dev/input/eventN`, `/dev/input/jsN`, and `/dev/hidrawN` nodes with 0666 permissions.
 
-> **Why polling instead of inotify?** sysfs does not generate inotify `IN_CREATE`/`IN_DELETE` events for new directory entries. The daemon originally used inotify but it silently blocked forever. Polling at 500ms provides reliable detection with negligible CPU overhead.
+2. **Fake udev database**: Writes `/run/udev/data/cMAJ:MIN` entries with device type properties (`ID_INPUT_JOYSTICK=1`, `ID_INPUT_KEYBOARD=1`, etc.). This allows libudev consumers (SDL/Steam) to discover devices without running udevd. Device type is determined via `ioctl(EVIOCGBIT)` capability detection.
+
+3. **Synthetic udev events**: Sends netlink messages on `NETLINK_KOBJECT_UEVENT` group 2 (the udev multicast group) with the `libudev\0` + `0xfeedcafe` header format. This triggers SDL's `udev_monitor` to pick up device hotplug events in real-time. Also creates `/run/udev/control` to signal "udev is present" to libudev.
+
+> **Why polling instead of inotify?** sysfs does not generate inotify `IN_CREATE`/`IN_DELETE` events. The daemon originally used inotify but it silently blocked forever. Polling at 500ms provides reliable detection with negligible CPU overhead.
+
+> **Why fake udev instead of running udevd?** A real udevd would create device nodes for ALL host devices visible in `/sys`, breaking container isolation. The daemon only creates nodes for `container-*` devices while still populating the udev database that SDL needs for gamepad discovery.
 
 This split design solves the **UHID async problem**: when Inputtino creates a PS5 DualSense via UHID, the kernel's `hid-playstation` driver creates child input devices asynchronously (main controller, motion sensor, touchpad). The shim can't mknod these because they don't exist yet at `write()` time. The daemon catches them on the next poll cycle.
 
 The daemon also:
 - **Scans existing devices at startup** in case it starts after some devices are already created
 - **Removes stale nodes** when devices are deleted from sysfs (two-pass scan/cleanup)
-- **Handles all device types uniformly** — uinput, UHID, and any future device creation methods
+- **Sends remove events** to notify SDL when devices are unplugged
+- **Classifies device types** via evdev capability bits (keyboard, mouse, joystick, touch, accelerometer, hidraw)
 
 **How host Steam is distinguished from container Steam**: Both create devices named "Steam Virtual Gamepad". The shim rewrites the `phys` field on ALL uinput devices created inside the container, regardless of which application creates them. Host Steam's devices have a different `phys`, so the host udev rule doesn't match them.
 
@@ -136,18 +143,22 @@ Subsequent builds are faster due to Docker layer caching.
 ### Single instance
 
 ```bash
+# Check your hidraw major number: grep hidraw /proc/devices (commonly 241-243)
+HIDRAW_MAJOR=$(grep hidraw /proc/devices | awk '{print $1}')
+
 sudo podman run -d \
     --name sunshine \
     --systemd=true \
     --shm-size=1g \
     --cap-add SYS_ADMIN \
     --cap-add MKNOD \
+    --cap-add NET_ADMIN \
     --device /dev/dri \
     --device /dev/uinput \
     --device-cgroup-rule='c 13:* rmw' \
+    --device-cgroup-rule="c ${HIDRAW_MAJOR}:* rmw" \
     --tmpfs /dev/input:rw,dev,nosuid,size=1m \
     -v /sys:/sys:ro \
-    -v /run/udev:/run/udev:ro \
     -v sunshine-steam:/home/gamer/.steam \
     -v sunshine-local:/home/gamer/.local/share/Steam \
     -v sunshine-config:/home/gamer/.config/sunshine \
@@ -170,12 +181,12 @@ Each instance needs a unique `CONTAINER_ID`, unique Sunshine port range, and sep
 sudo podman run -d --name sunshine-1 \
     --systemd=true \
     --shm-size=1g \
-    --cap-add SYS_ADMIN --cap-add MKNOD \
+    --cap-add SYS_ADMIN --cap-add MKNOD --cap-add NET_ADMIN \
     --device /dev/dri --device /dev/uinput \
     --device-cgroup-rule='c 13:* rmw' \
+    --device-cgroup-rule="c ${HIDRAW_MAJOR}:* rmw" \
     --tmpfs /dev/input:rw,dev,nosuid,size=1m \
     -v /sys:/sys:ro \
-    -v /run/udev:/run/udev:ro \
     -v s1-steam:/home/gamer/.steam \
     -v s1-local:/home/gamer/.local/share/Steam \
     -v s1-config:/home/gamer/.config/sunshine \
@@ -191,12 +202,12 @@ sudo podman run -d --name sunshine-1 \
 sudo podman run -d --name sunshine-2 \
     --systemd=true \
     --shm-size=1g \
-    --cap-add SYS_ADMIN --cap-add MKNOD \
+    --cap-add SYS_ADMIN --cap-add MKNOD --cap-add NET_ADMIN \
     --device /dev/dri --device /dev/uinput \
     --device-cgroup-rule='c 13:* rmw' \
+    --device-cgroup-rule="c ${HIDRAW_MAJOR}:* rmw" \
     --tmpfs /dev/input:rw,dev,nosuid,size=1m \
     -v /sys:/sys:ro \
-    -v /run/udev:/run/udev:ro \
     -v s2-steam:/home/gamer/.steam \
     -v s2-local:/home/gamer/.local/share/Steam \
     -v s2-config:/home/gamer/.config/sunshine \
@@ -264,7 +275,6 @@ podman run -d \
     --device /dev/dri \
     --device /dev/uinput \
     -v /sys:/sys:ro \
-    -v /run/udev:/run/udev:ro \
     -e CONTAINER_ID=sunshine-1 \
     -e SCREEN_WIDTH=1920 \
     -e SCREEN_HEIGHT=1080 \
@@ -281,7 +291,7 @@ podman run -d \
 ┌──────────────────────────────────────────────────────────────┐
 │  Container (rootful Podman recommended for multi-instance)    │
 │                                                              │
-│  LD_PRELOAD=libuinput_shim.so                               │
+│  LD_PRELOAD=libuinput_shim.so (Sunshine only)                │
 │  CONTAINER_ID=sunshine-1                                     │
 │                                                              │
 │  ┌──────────────┐    Wayland      ┌──────────────────┐      │
@@ -312,23 +322,27 @@ podman run -d \
 │         ▼                                                    │
 │  ┌──────────────────────────────────────────────────────┐   │
 │  │  input-mknod-daemon (sidecar, polling 500ms)         │   │
-│  │  Polls /sys/class/input/ for new devices              │   │
+│  │  Polls /sys/class/input/ + /sys/class/hidraw/         │   │
 │  │  If phys matches "container-*":                       │   │
-│  │    → reads major:minor from sysfs                     │   │
-│  │    → mknod /dev/input/eventN (mode 0666)              │   │
-│  │  Handles uinput (sync) + UHID/PS5 (async) uniformly  │   │
+│  │    → mknod /dev/input/eventN, jsN, /dev/hidrawN       │   │
+│  │    → classify via ioctl(EVIOCGBIT)                    │   │
+│  │    → write /run/udev/data/cMAJ:MIN (fake udev DB)    │   │
+│  │    → send netlink udev "add" event (0xfeedcafe hdr)   │   │
 │  └──────────────────────────────────────────────────────┘   │
 │         │                                                    │
-│         ▼                                                    │
-│  /dev/input/ (private tmpfs with dev flag — only this        │
-│               container's devices visible here)              │
+│         ├──► /dev/input/ (private tmpfs, only this           │
+│         │    container's devices visible)                    │
+│         │                                                    │
+│         ├──► /run/udev/data/ (fake udev DB for libudev)     │
 │         │                                                    │
 │         ▼                                                    │
 │  ┌──────────────────────────────────────────────────────┐   │
 │  │  Gamescope headless libinput (path-based, no udev)   │   │
-│  │  Background thread polls /dev/input/ for container-*  │   │
-│  │  devices and dispatches events to wlserver            │   │
-│  │  (mouse, keyboard, touch → compositor input)          │   │
+│  │  Reads mouse, keyboard, touch from /dev/input/        │   │
+│  └──────────────────────────────────────────────────────┘   │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │  Steam/SDL (reads /run/udev/data/ via libudev)        │   │
+│  │  Discovers gamepads, hidraw (DualSense) devices       │   │
 │  └──────────────────────────────────────────────────────┘   │
 │                                                              │
 └──────────────────────────────────────────────────────────────┘
@@ -337,8 +351,8 @@ Host kernel: device appears globally but tagged with
              phys="container-sunshine-1"
 
 Host udev:   ATTR{phys}=="container-*" →
-             LIBINPUT_IGNORE_DEVICE=1, ID_INPUT=""
-             (host desktop and host Steam unaffected)
+             ENV{ID_SEAT}="seat9", LIBINPUT_IGNORE_DEVICE=1
+             (devices hidden on non-existent seat, host unaffected)
 ```
 
 ## Known Limitations
@@ -347,9 +361,9 @@ Host udev:   ATTR{phys}=="container-*" →
 - **No dynamic resolution**: Gamescope's headless backend does not support resolution changes after startup (xrandr and wlr-randr mode switching are ignored). Set `SCREEN_WIDTH`/`SCREEN_HEIGHT` at container start.
 - **Port mapping and pairing**: Sunshine's internal ports must match external ports for Moonlight pairing to work. Use 1:1 port mapping (e.g., `-p 57989:57989`) and set `port = <HTTPS_PORT>` in sunshine.conf. NAT-style mapping (e.g., `57989:47989`) causes "certificate mismatch" errors during pairing.
 - **Steam startup**: Steam in SteamOS mode may restart once during initial setup (~1-2 min). SteamOS compatibility stubs are included to prevent extended crash loops, but the first session restart is normal.
-- **Gamepad input in headless mode**: Gamepads are not handled through gamescope's libinput path — they are read directly by Steam/SDL from `/dev/input/`. SDL needs udev for device discovery; without it, gamepads may not be detected. Investigation ongoing.
+- **Gamepad/hidraw hotplug**: The mknod daemon creates fake udev DB entries and sends synthetic netlink events (MurmurHash2 subsystem filter + `USEC_INITIALIZED`) for SDL/Steam gamepad discovery. Requires `CAP_NET_ADMIN` for the netlink socket.
+- **DualSense (DS5) detection**: DS5 mode requires the Moonlight client to advertise motion controls or manual `gamepad = ds5` in sunshine.conf. The `hid-playstation` kernel module must be loaded on the host. The hidraw device for DS5 is only created if the UHID phys is properly tagged by the shim.
 - **tmpfs /dev/input/ requires `dev` flag**: The `--tmpfs /dev/input:rw,dev,...` mount must include `dev` explicitly. Without it, podman defaults to `nodev` which blocks all character device access on the tmpfs, even with correct file permissions.
-- **Host udev database required**: The container needs `-v /run/udev:/run/udev:ro` for libinput to discover input devices. Without the host's udev database, libinput cannot enumerate devices.
 - **dup()/dup2() tracking**: If a process duplicates a uinput file descriptor, the shim loses tracking of the new fd. The mknod daemon still picks up the device via polling, but the `phys` field won't be tagged. This is uncommon in practice.
 - **Networking for multiple instances**: With `--network=host`, all instances share the host network. For multiple instances, use `SUNSHINE_PORT` env var and bridge networking with explicit 1:1 port mapping.
 - **Fedora version**: The Bazzite COPRs (Valve Mesa, PipeWire) target specific Fedora versions. If the COPR doesn't have builds for your Fedora version, the package installation will fail. Check COPR availability before changing `FEDORA_VERSION`.

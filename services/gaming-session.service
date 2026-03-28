@@ -12,6 +12,8 @@ RestartSec=5
 Environment=HOME=/home/gamer
 Environment=USER=gamer
 Environment=XDG_SESSION_TYPE=wayland
+# Container env vars propagated by container-env.service (system service)
+EnvironmentFile=-/run/container.env
 
 [Install]
 WantedBy=default.target

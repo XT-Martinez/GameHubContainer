@@ -1,0 +1,3 @@
+# Prevent locally-built binaries from being copied into the build context
+container-input-shim/input-mknod-daemon
+container-input-shim/libuinput_shim.so

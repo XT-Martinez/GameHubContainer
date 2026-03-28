@@ -1,0 +1,14 @@
+[Unit]
+Description=Propagate container env vars to user services
+DefaultDependencies=no
+Before=systemd-user-sessions.service
+After=systemd-tmpfiles-setup.service
+
+[Service]
+Type=oneshot
+PassEnvironment=SUNSHINE_PORT CONTAINER_ID SCREEN_WIDTH SCREEN_HEIGHT CUSTOM_REFRESH_RATES
+ExecStart=/bin/bash -c 'printenv | grep -E "^(SUNSHINE_PORT|CONTAINER_ID|SCREEN_WIDTH|SCREEN_HEIGHT|CUSTOM_REFRESH_RATES)=" > /run/container.env; chmod 644 /run/container.env; echo "[container-env] wrote /run/container.env"'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

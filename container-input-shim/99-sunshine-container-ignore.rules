@@ -1,9 +1,12 @@
-# Ignore virtual input devices created inside containers.
+# Isolate virtual input devices created inside containers from the host desktop.
 #
 # The LD_PRELOAD shim (libuinput_shim.so) tags every uinput/UHID device
-# with phys="container-<CONTAINER_ID>".  These rules prevent the host
-# desktop from consuming those devices, while leaving host-native devices
-# (including host Steam's virtual gamepads) untouched.
+# with phys="container-<CONTAINER_ID>".  These rules assign container devices
+# to a non-existent seat (seat9), preventing the host desktop, libinput,
+# systemd-logind, and host Steam from consuming them — while leaving
+# host-native devices (including host Steam's virtual gamepads) untouched.
+#
+# This approach mirrors the Wolf project's isolation strategy.
 #
 # Install: sudo cp 99-sunshine-container-ignore.rules /etc/udev/rules.d/
 #          sudo udevadm control --reload-rules && sudo udevadm trigger
@@ -15,15 +18,12 @@
 KERNEL=="uinput", SUBSYSTEM=="misc", MODE="0666"
 KERNEL=="uhid", SUBSYSTEM=="misc", MODE="0666"
 
-# Make libinput ignore container-tagged input devices
-SUBSYSTEM=="input", ATTR{phys}=="container-*", ENV{LIBINPUT_IGNORE_DEVICE}="1"
+# Assign container-tagged input devices to seat9 (non-existent seat).
+# This hides them from logind (seat0), libinput, and the host desktop.
+SUBSYSTEMS=="input", ATTR{phys}=="container-*", MODE="0660", GROUP="input", ENV{ID_SEAT}="seat9"
 
-# Prevent systemd-logind and other consumers from treating them as host input
-SUBSYSTEM=="input", ATTR{phys}=="container-*", ENV{ID_INPUT}=""
-SUBSYSTEM=="input", ATTR{phys}=="container-*", ENV{ID_INPUT_JOYSTICK}=""
-SUBSYSTEM=="input", ATTR{phys}=="container-*", ENV{ID_INPUT_KEY}=""
-SUBSYSTEM=="input", ATTR{phys}=="container-*", ENV{ID_INPUT_KEYBOARD}=""
-SUBSYSTEM=="input", ATTR{phys}=="container-*", ENV{ID_INPUT_MOUSE}=""
-SUBSYSTEM=="input", ATTR{phys}=="container-*", ENV{ID_INPUT_TOUCHPAD}=""
-SUBSYSTEM=="input", ATTR{phys}=="container-*", ENV{ID_INPUT_TOUCHSCREEN}=""
-SUBSYSTEM=="input", ATTR{phys}=="container-*", ENV{ID_INPUT_TABLET}=""
+# Also handle hidraw devices from container UHID (DualSense passthrough)
+KERNEL=="hidraw*", ATTRS{phys}=="container-*", MODE="0660", GROUP="input", ENV{ID_SEAT}="seat9"
+
+# Make libinput explicitly ignore container devices (belt-and-suspenders)
+SUBSYSTEM=="input", ATTR{phys}=="container-*", ENV{LIBINPUT_IGNORE_DEVICE}="1"
