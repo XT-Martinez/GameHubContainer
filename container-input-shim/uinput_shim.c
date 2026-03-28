@@ -250,12 +250,6 @@ ssize_t write(int fd, const void *buf, size_t count) {
 
     /*
      * UHID events start with a __u32 type field.
-     * For UHID_CREATE2, rewrite the phys field with our container tag.
-     * The kernel HID driver will propagate this phys to all child
-     * input devices, which the input-mknod daemon picks up via inotify.
-     */
-    /*
-     * UHID events start with a __u32 type field.
      * For UHID_CREATE2, we need at least the fields up to rd_data
      * (name + phys + uniq + metadata = 276 bytes + 4 byte type).
      * Some implementations write less than sizeof(struct uhid_event).
@@ -270,6 +264,14 @@ ssize_t write(int fd, const void *buf, size_t count) {
             snprintf((char *)copy.u.create2.phys,
                      sizeof(copy.u.create2.phys),
                      "%s", phys_tag);
+            /* Prefix the name so host udev rules can distinguish
+             * container UHID devices from host Sunshine UHID devices. */
+            {
+                char tagged_name[128];
+                snprintf(tagged_name, sizeof(tagged_name),
+                         "Container %s", (const char *)copy.u.create2.name);
+                memcpy(copy.u.create2.name, tagged_name, sizeof(copy.u.create2.name));
+            }
             DBG("tagged UHID_CREATE2 phys on fd %d (name=\"%s\", count=%zu)",
                 fd, copy.u.create2.name, count);
             ssize_t ret = real_write(fd, &copy, count);

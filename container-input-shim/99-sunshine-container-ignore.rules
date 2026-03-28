@@ -29,7 +29,8 @@ SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{phys}=="container-*", MODE="0600
 KERNEL=="hidraw*", ATTRS{phys}=="container-*", MODE="0600", ENV{ID_SEAT}="seat9"
 
 # ── UHID devices (kernel doesn't propagate phys, match by name) ──
-# Sunshine's inputtino creates DS5 with name "Sunshine PS5 (virtual) pad".
-# Child input devices get suffixed names (Touchpad, Motion Sensors).
-SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{name}=="Sunshine *virtual* pad*", MODE="0600", ENV{ID_SEAT}="seat9", ENV{LIBINPUT_IGNORE_DEVICE}="1"
-SUBSYSTEM=="hidraw", ATTRS{name}=="Sunshine *virtual* pad", MODE="0600", ENV{ID_SEAT}="seat9"
+# The shim prefixes UHID device names with "Container " so we can
+# distinguish them from identical host Sunshine devices.
+# Child input devices inherit the prefix (e.g., "Container ... Touchpad").
+SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{name}=="Container *", MODE="0600", ENV{ID_SEAT}="seat9", ENV{LIBINPUT_IGNORE_DEVICE}="1"
+SUBSYSTEM=="hidraw", ATTRS{name}=="Container *", MODE="0600", ENV{ID_SEAT}="seat9"

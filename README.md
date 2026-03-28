@@ -46,15 +46,17 @@ When a process creates a virtual input device via `/dev/uinput` or `/dev/uhid`, 
 
 This works for:
 - **uinput devices** (mouse, keyboard, gamepads via Inputtino and Steam Input): the shim intercepts `UI_SET_PHYS` and `UI_DEV_CREATE` ioctls
-- **UHID devices** (PS5 DualSense): the shim intercepts `write()` calls with `UHID_CREATE2` events and rewrites the `phys` field
+- **UHID devices** (PS5 DualSense, Steam Input virtual controllers): the shim intercepts `write()` calls with `UHID_CREATE2` events and rewrites the `phys` field
 
-The shim is purely a tagger — it does not create device nodes or touch the filesystem.
+For UHID devices, the kernel does not propagate the `phys` field to child input/hidraw sysfs attributes. To work around this, the shim also:
+- **Records UHID device names** to `/run/container-input/uhid-names` so the mknod daemon can identify UHID child devices by name
+- **Prefixes UHID device names** with `"Container "` (e.g., `"Container Sunshine PS5 (virtual) pad"`) so host udev rules can distinguish container UHID devices from identical host Sunshine devices
 
 #### Input Device Node Daemon (`input-mknod-daemon`)
 
 A lightweight sidecar daemon that **creates device nodes** and **populates the udev database** for container-tagged devices. It handles three responsibilities:
 
-1. **Device node creation**: Polls `/sys/class/input/` and `/sys/class/hidraw/` every 500ms. For devices whose `phys` starts with `container-`, creates `/dev/input/eventN`, `/dev/input/jsN`, and `/dev/hidrawN` nodes with 0666 permissions.
+1. **Device node creation**: Polls `/sys/class/input/` and `/sys/class/hidraw/` every 500ms. For devices whose `phys` starts with `container-`, creates `/dev/input/eventN`, `/dev/input/jsN`, and `/dev/hidrawN` nodes with 0666 permissions. For UHID devices (where the kernel doesn't propagate phys), falls back to **name-based matching** against the shim's claim file (`/run/container-input/uhid-names`), but only for devices under `/sys/devices/virtual/misc/uhid/`.
 
 2. **Fake udev database**: Writes `/run/udev/data/cMAJ:MIN` entries with device type properties (`ID_INPUT_JOYSTICK=1`, `ID_INPUT_KEYBOARD=1`, etc.). This allows libudev consumers (SDL/Steam) to discover devices without running udevd. Device type is determined via `ioctl(EVIOCGBIT)` capability detection.
 
@@ -102,8 +104,10 @@ sudo udevadm trigger
 
 **What this does**:
 - `/dev/uinput` and `/dev/uhid` set to `MODE="0666"` — allows the container's non-root user to create virtual input devices
-- Any input device with `phys` matching `container-*` gets `LIBINPUT_IGNORE_DEVICE=1` — libinput (and thus your desktop compositor) ignores it
-- Container-tagged devices also get `ID_INPUT=""` — systemd-logind and other consumers don't treat them as host input
+- Container-tagged input devices (`phys` matching `container-*`) and UHID devices (name matching `Container *`) get:
+  - `MODE="0600"` — strips group-read permission, which makes HHD (Handheld Daemon) skip them (critical for SteamOS/Bazzite hosts where seat-based filtering alone is insufficient)
+  - `ID_SEAT="seat9"` — assigns to a non-existent seat, hiding from systemd-logind
+  - `LIBINPUT_IGNORE_DEVICE="1"` — libinput (and desktop compositors) ignores them
 
 #### 2. Add your user to the `input` group
 
@@ -317,13 +321,15 @@ podman run -d \
 │  │  libuinput_shim.so (LD_PRELOAD)                      │   │
 │  │  Tags phys="container-sunshine-1" on all devices      │   │
 │  │  (uinput via ioctl, UHID via write)                   │   │
+│  │  UHID: also prefixes name with "Container ",          │   │
+│  │        records name to /run/container-input/uhid-names │   │
 │  └──────────────────────────────────────────────────────┘   │
 │         │ devices appear in kernel                           │
 │         ▼                                                    │
 │  ┌──────────────────────────────────────────────────────┐   │
 │  │  input-mknod-daemon (sidecar, polling 500ms)         │   │
 │  │  Polls /sys/class/input/ + /sys/class/hidraw/         │   │
-│  │  If phys matches "container-*":                       │   │
+│  │  Match: phys=="container-*" OR UHID name in claims    │   │
 │  │    → mknod /dev/input/eventN, jsN, /dev/hidrawN       │   │
 │  │    → classify via ioctl(EVIOCGBIT)                    │   │
 │  │    → write /run/udev/data/cMAJ:MIN (fake udev DB)    │   │
@@ -348,11 +354,12 @@ podman run -d \
 └──────────────────────────────────────────────────────────────┘
 
 Host kernel: device appears globally but tagged with
-             phys="container-sunshine-1"
+             phys="container-sunshine-1" (uinput)
+             name="Container ..." (UHID)
 
-Host udev:   ATTR{phys}=="container-*" →
-             ENV{ID_SEAT}="seat9", LIBINPUT_IGNORE_DEVICE=1
-             (devices hidden on non-existent seat, host unaffected)
+Host udev:   ATTRS{phys}=="container-*" OR ATTRS{name}=="Container *" →
+             MODE=0600, ID_SEAT="seat9", LIBINPUT_IGNORE_DEVICE=1
+             (hidden from HHD, logind, libinput, host desktop)
 ```
 
 ## Known Limitations
@@ -362,7 +369,7 @@ Host udev:   ATTR{phys}=="container-*" →
 - **Port mapping and pairing**: Sunshine's internal ports must match external ports for Moonlight pairing to work. Use 1:1 port mapping (e.g., `-p 57989:57989`) and set `port = <HTTPS_PORT>` in sunshine.conf. NAT-style mapping (e.g., `57989:47989`) causes "certificate mismatch" errors during pairing.
 - **Steam startup**: Steam in SteamOS mode may restart once during initial setup (~1-2 min). SteamOS compatibility stubs are included to prevent extended crash loops, but the first session restart is normal.
 - **Gamepad/hidraw hotplug**: The mknod daemon creates fake udev DB entries and sends synthetic netlink events (MurmurHash2 subsystem filter + `USEC_INITIALIZED`) for SDL/Steam gamepad discovery. Requires `CAP_NET_ADMIN` for the netlink socket.
-- **DualSense (DS5) detection**: DS5 mode requires the Moonlight client to advertise motion controls or manual `gamepad = ds5` in sunshine.conf. The `hid-playstation` kernel module must be loaded on the host. The hidraw device for DS5 is only created if the UHID phys is properly tagged by the shim.
+- **DualSense (DS5) detection**: DS5 mode requires the Moonlight client to advertise motion controls or manual `gamepad = ds5` in sunshine.conf. The `hid-playstation` kernel module must be loaded on the host. DS5 uses UHID (not uinput), and the kernel doesn't propagate UHID phys to child sysfs attributes — the shim works around this by recording UHID device names to a claim file and prefixing names with "Container" for host-side isolation.
 - **tmpfs /dev/input/ requires `dev` flag**: The `--tmpfs /dev/input:rw,dev,...` mount must include `dev` explicitly. Without it, podman defaults to `nodev` which blocks all character device access on the tmpfs, even with correct file permissions.
 - **dup()/dup2() tracking**: If a process duplicates a uinput file descriptor, the shim loses tracking of the new fd. The mknod daemon still picks up the device via polling, but the `phys` field won't be tagged. This is uncommon in practice.
 - **Networking for multiple instances**: With `--network=host`, all instances share the host network. For multiple instances, use `SUNSHINE_PORT` env var and bridge networking with explicit 1:1 port mapping.
