@@ -2,11 +2,15 @@
 #
 # The LD_PRELOAD shim (libuinput_shim.so) tags every uinput/UHID device
 # with phys="container-<CONTAINER_ID>".  These rules assign container devices
-# to a non-existent seat (seat9), preventing the host desktop, libinput,
-# systemd-logind, and host Steam from consuming them — while leaving
-# host-native devices (including host Steam's virtual gamepads) untouched.
+# to a non-existent seat (seat9) and remove group-read permission.
 #
-# This approach mirrors the Wolf project's isolation strategy.
+# MODE=0600 is critical: HHD (Handheld Daemon) voluntarily skips devices
+# without group-read (checks st_mode & S_IRGRP), which is the only way to
+# hide devices from it in SteamOS/gamescope mode where seat-based filtering
+# is not effective.
+#
+# For UHID devices (DualSense/DS5), the kernel doesn't propagate the phys
+# field to sysfs, so we match by device name instead.
 #
 # Install: sudo cp 99-sunshine-container-ignore.rules /etc/udev/rules.d/
 #          sudo udevadm control --reload-rules && sudo udevadm trigger
@@ -18,12 +22,14 @@
 KERNEL=="uinput", SUBSYSTEM=="misc", MODE="0666"
 KERNEL=="uhid", SUBSYSTEM=="misc", MODE="0666"
 
-# Assign container-tagged input devices to seat9 (non-existent seat).
-# This hides them from logind (seat0), libinput, and the host desktop.
-SUBSYSTEMS=="input", ATTR{phys}=="container-*", MODE="0660", GROUP="input", ENV{ID_SEAT}="seat9"
+# ── uinput devices (phys-tagged by our shim) ─────────────────
+# Match event/js nodes via parent phys (ATTRS with S), strip group-read
+# to hide from HHD, and assign to non-existent seat9.
+SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{phys}=="container-*", MODE="0600", ENV{ID_SEAT}="seat9", ENV{LIBINPUT_IGNORE_DEVICE}="1"
+KERNEL=="hidraw*", ATTRS{phys}=="container-*", MODE="0600", ENV{ID_SEAT}="seat9"
 
-# Also handle hidraw devices from container UHID (DualSense passthrough)
-KERNEL=="hidraw*", ATTRS{phys}=="container-*", MODE="0660", GROUP="input", ENV{ID_SEAT}="seat9"
-
-# Make libinput explicitly ignore container devices (belt-and-suspenders)
-SUBSYSTEM=="input", ATTR{phys}=="container-*", ENV{LIBINPUT_IGNORE_DEVICE}="1"
+# ── UHID devices (kernel doesn't propagate phys, match by name) ──
+# Sunshine's inputtino creates DS5 with name "Sunshine PS5 (virtual) pad".
+# Child input devices get suffixed names (Touchpad, Motion Sensors).
+SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{name}=="Sunshine *virtual* pad*", MODE="0600", ENV{ID_SEAT}="seat9", ENV{LIBINPUT_IGNORE_DEVICE}="1"
+SUBSYSTEM=="hidraw", ATTRS{name}=="Sunshine *virtual* pad", MODE="0600", ENV{ID_SEAT}="seat9"
