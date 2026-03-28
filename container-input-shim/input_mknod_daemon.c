@@ -48,6 +48,9 @@
 #define UDEV_DATA_DIR  "/run/udev/data"
 #define TAG_PREFIX     "container-"
 
+/* UHID device name claims file (written by uinput shim) */
+#define UHID_NAMES_FILE "/run/container-input/uhid-names"
+
 /* How long to wait for sysfs to populate */
 #define PHYS_RETRY_COUNT   20
 #define PHYS_RETRY_USEC    50000   /* 50ms per retry → 1s max */
@@ -318,6 +321,105 @@ static int is_container_hidraw(const char *devname) {
     if (!read_hidraw_phys(devname, phys, sizeof(phys)))
         return 0;
     return strncmp(phys, TAG_PREFIX, strlen(TAG_PREFIX)) == 0;
+}
+
+/* ── UHID device claim matching ───────────────────────────── */
+
+/*
+ * Check if a sysfs device path resolves through /devices/virtual/misc/uhid/.
+ * Only UHID-created devices live there, so this filters out real hardware.
+ */
+static int is_uhid_device(const char *sysfs_base, const char *devname) {
+    char link_path[PATH_MAX], resolved[PATH_MAX];
+    snprintf(link_path, sizeof(link_path), "%s/%s", sysfs_base, devname);
+    if (!realpath(link_path, resolved))
+        return 0;
+    return strstr(resolved, "/misc/uhid/") != NULL;
+}
+
+/* Read the "name" attribute from a device's parent input device */
+static int read_device_name(const char *sysfs_base, const char *devname,
+                            char *name, size_t name_size) {
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path), "%s/%s/device/name", sysfs_base, devname);
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    if (fgets(name, name_size, f)) {
+        char *nl = strchr(name, '\n');
+        if (nl) *nl = '\0';
+        fclose(f);
+        return name[0] != '\0';
+    }
+    fclose(f);
+    return 0;
+}
+
+/* Read HID_NAME from a hidraw device's parent HID uevent */
+static int read_hidraw_hid_name(const char *devname,
+                                 char *name, size_t name_size) {
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path),
+             SYSFS_HIDRAW "/%s/device/uevent", devname);
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+
+    char line[512];
+    while (fgets(line, sizeof(line), f)) {
+        if (strncmp(line, "HID_NAME=", 9) == 0) {
+            char *val = line + 9;
+            char *nl = strchr(val, '\n');
+            if (nl) *nl = '\0';
+            snprintf(name, name_size, "%s", val);
+            fclose(f);
+            return name[0] != '\0';
+        }
+    }
+    fclose(f);
+    return 0;
+}
+
+/*
+ * Check if a device name matches any UHID name claimed by our shim.
+ * Child input devices have names like "<HID name> Touchpad" or
+ * "<HID name> Motion Sensors", so we use prefix matching.
+ */
+static int is_uhid_claimed(const char *device_name) {
+    FILE *f = fopen(UHID_NAMES_FILE, "r");
+    if (!f) return 0;
+
+    char line[256];
+    while (fgets(line, sizeof(line), f)) {
+        char *nl = strchr(line, '\n');
+        if (nl) *nl = '\0';
+        if (line[0] && strncmp(device_name, line, strlen(line)) == 0) {
+            fclose(f);
+            return 1;
+        }
+    }
+    fclose(f);
+    return 0;
+}
+
+/* Check if an input device is a UHID device claimed by this container */
+static int is_uhid_claimed_input(const char *devname) {
+    if (!is_uhid_device(SYSFS_INPUT, devname))
+        return 0;
+    char name[256];
+    if (!read_device_name(SYSFS_INPUT, devname, name, sizeof(name)))
+        return 0;
+    DBG("UHID input %s name=\"%s\"", devname, name);
+    return is_uhid_claimed(name);
+}
+
+/* Check if a hidraw device is a UHID device claimed by this container */
+static int is_uhid_claimed_hidraw(const char *devname) {
+    if (!is_uhid_device(SYSFS_HIDRAW, devname))
+        return 0;
+    char name[256];
+    if (!read_hidraw_hid_name(devname, name, sizeof(name)))
+        return 0;
+    DBG("UHID hidraw %s HID_NAME=\"%s\"", devname, name);
+    return is_uhid_claimed(name);
 }
 
 /* Read sysfs dev (major:minor) file */
@@ -705,7 +807,8 @@ static int poll_and_sync_input(void) {
     while ((ent = readdir(d))) {
         if (!is_input_device(ent->d_name))
             continue;
-        if (!is_container_input(ent->d_name))
+        if (!is_container_input(ent->d_name) &&
+            !is_uhid_claimed_input(ent->d_name))
             continue;
 
         count++;
@@ -755,7 +858,8 @@ static int poll_and_sync_hidraw(void) {
     while ((ent = readdir(d))) {
         if (!is_hidraw_device(ent->d_name))
             continue;
-        if (!is_container_hidraw(ent->d_name))
+        if (!is_container_hidraw(ent->d_name) &&
+            !is_uhid_claimed_hidraw(ent->d_name))
             continue;
 
         count++;
@@ -807,6 +911,10 @@ int main(void) {
 
     /* Prepare udev infrastructure */
     ensure_udev_dirs();
+
+    /* Create UHID claims directory (world-writable so user-space shim can write) */
+    mkdir("/run/container-input", 0755);
+    chmod("/run/container-input", 0777);
     if (init_udev_netlink() < 0)
         ERR("udev netlink init failed — SDL gamepad discovery may not work");
 

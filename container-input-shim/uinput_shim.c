@@ -27,6 +27,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 /* ── Configuration ─────────────────────────────────────────── */
@@ -34,6 +35,10 @@
 #define MAX_FDS   4096
 #define PHYS_MAX  256
 #define TAG_PREFIX "container-"
+
+/* Directory for UHID device name claims (container-local /run) */
+#define UHID_CLAIMS_DIR   "/run/container-input"
+#define UHID_NAMES_FILE   UHID_CLAIMS_DIR "/uhid-names"
 
 /* ── State ─────────────────────────────────────────────────── */
 
@@ -202,6 +207,39 @@ int ioctl(int fd, unsigned long request, ...) {
     return real_ioctl(fd, request, arg);
 }
 
+/* ── UHID name claim ──────────────────────────────────────── */
+
+/*
+ * Record a UHID device name so the mknod daemon can identify
+ * UHID child devices (input + hidraw) as belonging to this container.
+ * The kernel doesn't propagate UHID phys to sysfs, but it does
+ * propagate the device name — so we use name-based matching.
+ */
+static void record_uhid_name(const char *name) {
+    mkdir(UHID_CLAIMS_DIR, 0755);
+    FILE *f = fopen(UHID_NAMES_FILE, "r");
+    if (f) {
+        char line[256];
+        while (fgets(line, sizeof(line), f)) {
+            char *nl = strchr(line, '\n');
+            if (nl) *nl = '\0';
+            if (strcmp(line, name) == 0) {
+                fclose(f);
+                return; /* already recorded */
+            }
+        }
+        fclose(f);
+    }
+    f = fopen(UHID_NAMES_FILE, "a");
+    if (f) {
+        fprintf(f, "%s\n", name);
+        fclose(f);
+        DBG("recorded UHID name claim: \"%s\"", name);
+    } else {
+        DBG("FAILED to write UHID claim file %s: %s", UHID_NAMES_FILE, strerror(errno));
+    }
+}
+
 /* ── Hooked: write (UHID phys tagging) ────────────────────── */
 
 ssize_t write(int fd, const void *buf, size_t count) {
@@ -216,19 +254,31 @@ ssize_t write(int fd, const void *buf, size_t count) {
      * The kernel HID driver will propagate this phys to all child
      * input devices, which the input-mknod daemon picks up via inotify.
      */
-    if (count >= sizeof(struct uhid_event)) {
+    /*
+     * UHID events start with a __u32 type field.
+     * For UHID_CREATE2, we need at least the fields up to rd_data
+     * (name + phys + uniq + metadata = 276 bytes + 4 byte type).
+     * Some implementations write less than sizeof(struct uhid_event).
+     */
+    if (count >= sizeof(__u32)) {
         const struct uhid_event *ev = (const struct uhid_event *)buf;
 
         if (ev->type == UHID_CREATE2) {
             struct uhid_event copy;
-            memcpy(&copy, buf, sizeof(copy));
+            memset(&copy, 0, sizeof(copy));
+            memcpy(&copy, buf, count < sizeof(copy) ? count : sizeof(copy));
             snprintf((char *)copy.u.create2.phys,
                      sizeof(copy.u.create2.phys),
                      "%s", phys_tag);
-            DBG("tagged UHID_CREATE2 phys on fd %d (name=\"%s\")",
-                fd, copy.u.create2.name);
-            return real_write(fd, &copy, count);
+            DBG("tagged UHID_CREATE2 phys on fd %d (name=\"%s\", count=%zu)",
+                fd, copy.u.create2.name, count);
+            ssize_t ret = real_write(fd, &copy, count);
+            if (ret > 0)
+                record_uhid_name((const char *)copy.u.create2.name);
+            return ret;
         }
+        if (ev->type != 12 && ev->type != 10) /* skip noisy INPUT2/GET_REPORT_REPLY */
+            DBG("UHID write on fd %d: type=%u count=%zu", fd, ev->type, count);
     }
 
     return real_write(fd, buf, count);
