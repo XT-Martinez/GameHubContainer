@@ -27,19 +27,30 @@ if [ -f /usr/share/sdl/gamecontrollerdb.txt ]; then
 fi
 
 # Container has no seat/session — force headless backend without libseat.
-# These must be set in the systemd user manager so they propagate to
-# gamescope-session-plus@steam.service (which is started as a separate unit).
+# Export to current shell (for the exec'd gamescope-session-plus below)
+# AND set in the systemd user manager (for services started later, e.g. sunshine).
+export LIBSEAT_BACKEND=noop
+export WLR_BACKENDS=headless
+export BACKEND=headless
+export SCREEN_WIDTH="${SCREEN_WIDTH:-1920}"
+export SCREEN_HEIGHT="${SCREEN_HEIGHT:-1080}"
+export CUSTOM_REFRESH_RATES="${CUSTOM_REFRESH_RATES:-60,90,120}"
+export CONTAINER_ID="${CONTAINER_ID:-default}"
+export ENABLE_GAMESCOPE_HDR="${ENABLE_GAMESCOPE_HDR:-1}"
+export ENABLE_GAMESCOPE_WSI="${ENABLE_GAMESCOPE_WSI:-1}"
+${SUNSHINE_PORT:+export SUNSHINE_PORT=$SUNSHINE_PORT}
+
 systemctl --user import-environment 2>/dev/null || true
 systemctl --user set-environment \
-    LIBSEAT_BACKEND=noop \
-    WLR_BACKENDS=headless \
-    BACKEND=headless \
-    SCREEN_WIDTH="${SCREEN_WIDTH:-1920}" \
-    SCREEN_HEIGHT="${SCREEN_HEIGHT:-1080}" \
-    CUSTOM_REFRESH_RATES="${CUSTOM_REFRESH_RATES:-60,90,120}" \
-    CONTAINER_ID="${CONTAINER_ID:-default}" \
-    ENABLE_GAMESCOPE_HDR="${ENABLE_GAMESCOPE_HDR:-1}" \
-    ENABLE_GAMESCOPE_WSI="${ENABLE_GAMESCOPE_WSI:-1}" \
+    LIBSEAT_BACKEND="$LIBSEAT_BACKEND" \
+    WLR_BACKENDS="$WLR_BACKENDS" \
+    BACKEND="$BACKEND" \
+    SCREEN_WIDTH="$SCREEN_WIDTH" \
+    SCREEN_HEIGHT="$SCREEN_HEIGHT" \
+    CUSTOM_REFRESH_RATES="$CUSTOM_REFRESH_RATES" \
+    CONTAINER_ID="$CONTAINER_ID" \
+    ENABLE_GAMESCOPE_HDR="$ENABLE_GAMESCOPE_HDR" \
+    ENABLE_GAMESCOPE_WSI="$ENABLE_GAMESCOPE_WSI" \
     ${SUNSHINE_PORT:+SUNSHINE_PORT=$SUNSHINE_PORT}
 
 exec gamescope-session-plus steam

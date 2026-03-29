@@ -326,8 +326,11 @@ RUN mkdir -p /etc/systemd/system/multi-user.target.wants && \
 # Default Sunshine config (system location — copied to user dir on first start)
 COPY configs/sunshine.conf /etc/sunshine/sunshine.conf.default
 
-# Add restart drop-in for gamescope-session-plus (vendor unit has no Restart=).
-# Steam may need several restarts to bootstrap on fresh volumes.
+# Add drop-ins for gamescope-session-plus (vendor unit has no Restart= or env).
+# The environment drop-in ensures LIBSEAT_BACKEND=noop and other critical vars
+# are set on the FIRST start, not just after gaming-session.service's set-environment
+# runs (which is a race). Container-specific vars come from /run/container.env
+# (written by container-env.service before user sessions start).
 RUN mkdir -p /etc/systemd/user/gamescope-session-plus@steam.service.d && \
     printf '%s\n' \
         '[Service]' \
@@ -337,7 +340,16 @@ RUN mkdir -p /etc/systemd/user/gamescope-session-plus@steam.service.d && \
         '[Unit]' \
         'StartLimitIntervalSec=300' \
         'StartLimitBurst=10' \
-        > /etc/systemd/user/gamescope-session-plus@steam.service.d/restart.conf
+        > /etc/systemd/user/gamescope-session-plus@steam.service.d/restart.conf && \
+    printf '%s\n' \
+        '[Service]' \
+        'EnvironmentFile=-/run/container.env' \
+        'Environment=LIBSEAT_BACKEND=noop' \
+        'Environment=WLR_BACKENDS=headless' \
+        'Environment=BACKEND=headless' \
+        'Environment=ENABLE_GAMESCOPE_HDR=1' \
+        'Environment=ENABLE_GAMESCOPE_WSI=1' \
+        > /etc/systemd/user/gamescope-session-plus@steam.service.d/container-env.conf
 
 # Enable user services globally
 # sunshine.service must be enabled (is-enabled=enabled) because gamescope-session-plus
