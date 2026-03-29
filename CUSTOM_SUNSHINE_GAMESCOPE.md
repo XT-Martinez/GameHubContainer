@@ -289,10 +289,10 @@ endif()
 | File | Changes |
 |------|---------|
 | `gamescope/protocol/meson.build` | Added gamescope-scanout.xml |
-| `gamescope/src/wlserver.hpp` | Added scanout client struct + function decl |
-| `gamescope/src/wlserver.cpp` | Protocol handlers + send_frame (~200 lines added) |
-| `gamescope/src/steamcompmgr.cpp` | Rate limiter, commit-skip, scanout hook, NoFilter |
-| `gamescope/src/Backends/HeadlessBackend.cpp` | DRM modifiers (LINEAR) for headless output, path-based libinput for container input devices, stale device cleanup for hotplug, HDR10 support via `--hdr-enabled` flag (BT.2020/PQ, 1000 nit CLL) |
+| `gamescope/src/wlserver.hpp` | Added scanout client struct + function decl, wlr-output-management fields (output_manager, apply/test listeners, pending_output_mode) |
+| `gamescope/src/wlserver.cpp` | Protocol handlers + send_frame (~200 lines added), wlr-output-management protocol (apply/test handlers, wlserver_update_output_manager), initial config broadcast |
+| `gamescope/src/steamcompmgr.cpp` | Rate limiter, commit-skip, scanout hook, NoFilter, update_vrr_atoms call after PollState for refresh/HDR feedback |
+| `gamescope/src/Backends/HeadlessBackend.cpp` | DRM modifiers (LINEAR) for headless output, path-based libinput for container input devices, stale device cleanup for hotplug, HDR10 support (always advertised, enabled via `cv_hdr_enabled`), dynamic resolution/refresh via wlr-output-management + PollState, EDID generation, HackTemporarySetDynamicRefresh for Steam frame limit, GetValidDynamicRefreshRates from `--custom-refresh-rates` |
 | `gamescope/src/Backends/DeferredBackend.h` | Marked `CDeferredFb::Unwrap()` as `inline` (fixes ODR violation) |
 | `gamescope/src/pipewire.cpp` | Max framerate atomic + accessor |
 | `gamescope/src/pipewire.hpp` | pipewire_get_max_framerate() declaration |

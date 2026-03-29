@@ -78,19 +78,23 @@ The daemon also:
 
 ### Resolution and Refresh Rate
 
-The output resolution is set at container startup via environment variables:
+The initial output resolution is set at container startup via environment variables:
 
 - `SCREEN_WIDTH` (default: 1920) — gamescope output width
 - `SCREEN_HEIGHT` (default: 1080) — gamescope output height
 - `CUSTOM_REFRESH_RATES` (default: 60,90,120) — available refresh rates
 
-To stream at a different resolution, restart the container with different values (e.g., `-e SCREEN_WIDTH=2560 -e SCREEN_HEIGHT=1440`).
+**Dynamic resolution**: When a Moonlight client connects, Sunshine runs `set-resolution.sh` which calls `wlr-randr` to change gamescope's output resolution and refresh rate to match the client request. This uses the `wlr-output-management` Wayland protocol, which the headless backend now implements. The change propagates through:
 
-> **Runtime resolution changes** are not yet supported. The headless backend does not expose the `wlr-output-management` Wayland protocol, so wlr-randr cannot connect. This is planned for a future update.
+1. Gamescope compositor output (Vulkan images recreated)
+2. All Xwayland server modes (games see the new resolution)
+3. Scanout export to Sunshine (stream matches client resolution)
+
+Steam can also switch between the configured `CUSTOM_REFRESH_RATES` via its frame limit setting, which calls `HackTemporarySetDynamicRefresh()` on the headless backend.
 
 ### HDR
 
-HDR10 output is enabled by default via the `--hdr-enabled` gamescope flag. The headless backend reports BT.2020/PQ colorimetry with 1000 nit max content light level. HDR metadata is sent per-frame through the scanout export protocol to Sunshine, which forwards it to the Moonlight client.
+The headless backend always advertises HDR10 capability (BT.2020/PQ, 1000 nit peak). HDR output is activated when gamescope is started with `--hdr-enabled` (set by default via `ENABLE_GAMESCOPE_HDR=1`). A synthetic EDID with HDR static metadata is generated and written to `$GAMESCOPE_PATCHED_EDID_FILE` so Steam and games can detect HDR support. HDR metadata is sent per-frame through the scanout export protocol to Sunshine, which forwards it to the Moonlight client.
 
 To disable HDR, set `ENABLE_GAMESCOPE_HDR=0` in the podman run command (e.g., `-e ENABLE_GAMESCOPE_HDR=0`).
 

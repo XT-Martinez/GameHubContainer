@@ -1,19 +1,32 @@
 #!/bin/bash
 # Resolution matching for Sunshine prep command.
 #
-# Gamescope doesn't support dynamic resolution changes via xrandr or wlr-randr.
-# The output resolution is set at gamescope startup via SCREEN_WIDTH/SCREEN_HEIGHT
-# environment variables (see start-gaming-session.sh).
-#
-# This script logs the client request for debugging. To change the streaming
-# resolution, restart the container with different env vars:
-#   -e SCREEN_WIDTH=2560 -e SCREEN_HEIGHT=1440
+# When a Moonlight client connects, Sunshine sets SUNSHINE_CLIENT_WIDTH,
+# SUNSHINE_CLIENT_HEIGHT, and SUNSHINE_CLIENT_FPS, then runs this script.
+# We use wlr-randr to dynamically change gamescope's output resolution
+# via the wlr-output-management Wayland protocol.
 
-WIDTH="${SUNSHINE_CLIENT_WIDTH:-unknown}"
-HEIGHT="${SUNSHINE_CLIENT_HEIGHT:-unknown}"
-FPS="${SUNSHINE_CLIENT_FPS:-unknown}"
+WIDTH="${SUNSHINE_CLIENT_WIDTH:-}"
+HEIGHT="${SUNSHINE_CLIENT_HEIGHT:-}"
+FPS="${SUNSHINE_CLIENT_FPS:-}"
 
-echo "Client requested: ${WIDTH}x${HEIGHT}@${FPS}Hz"
-echo "Gamescope output resolution is fixed at startup (SCREEN_WIDTH x SCREEN_HEIGHT)"
+if [ -z "$WIDTH" ] || [ -z "$HEIGHT" ]; then
+    echo "set-resolution: no client resolution provided, skipping"
+    exit 0
+fi
 
+# Default to 60 if FPS not provided
+FPS="${FPS:-60}"
 
+echo "set-resolution: requesting ${WIDTH}x${HEIGHT}@${FPS}Hz"
+
+# Use gamescope's wayland display
+export WAYLAND_DISPLAY="${GAMESCOPE_WAYLAND_DISPLAY:-${WAYLAND_DISPLAY:-gamescope-0}}"
+
+# Apply the mode change via wlr-output-management protocol
+if wlr-randr --output gamescope --custom-mode "${WIDTH}x${HEIGHT}@${FPS}"; then
+    echo "set-resolution: mode change applied successfully"
+else
+    echo "set-resolution: wlr-randr failed (exit $?), resolution unchanged" >&2
+    exit 1
+fi
