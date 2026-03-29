@@ -256,6 +256,9 @@ endif()
 14. **Host udev rules not matching event device nodes**: The previous udev rules used `ATTR{phys}` which only matches the device's own attributes. For event/js nodes, `phys` is on the parent `inputN` device, not on the `eventN` node itself. This meant `MODE` and `RUN` applied to the parent (which has no `/dev` entry), leaving the actual device nodes with default 0660 permissions. Fixed by using `ATTRS{phys}` (with S) + `KERNEL=="event*|js*"` to correctly match event nodes via parent attributes.
 15. **HHD (Handheld Daemon) ignoring seat-based isolation**: On SteamOS/Bazzite hosts, HHD reads evdev devices directly as root, bypassing seat assignments and `LIBINPUT_IGNORE_DEVICE`. HHD was grabbing container input devices and re-emitting them to the host Steam session. Fixed by setting `MODE="0600"` (strip group-read) in udev rules — HHD voluntarily skips devices where `st_mode & S_IRGRP == 0` (controllers.py line 928).
 16. **UHID name-based udev rules matching host Sunshine**: The name-based udev rule `ATTRS{name}=="Sunshine *virtual* pad*"` also matched DS5 devices created by the host's own Sunshine installation, breaking host gamepad support. Fixed by having the shim prefix UHID device names with `"Container "` (e.g., `"Container Sunshine PS5 (virtual) pad"`), and updating the udev rule to match `ATTRS{name}=="Container *"`. DS5 detection by Steam/SDL is unaffected since they identify controllers by vendor:product ID (054C:0CE6), not by name.
+17. **SteamOS OOBE stuck at network screen**: The SteamOS initial setup (OOBE) queries NetworkManager via D-Bus to detect network connectivity. Without NetworkManager, the "Choose your network" screen blocks indefinitely. Fixed by adding NetworkManager and iproute to the container. With `--network=host`, NM sees the host's network interfaces and reports connected, allowing the OOBE to proceed.
+18. **Steam hardwareupdater crash loop**: Steam's `hardwareupdater` Python script crashes with `ImportError: Unable to load libhidapi-hidraw.so`, spamming logs. Fixed by installing the `hidapi` package in the container.
+19. **No HDR in headless mode**: The gamescope headless backend hardcoded `SupportsHDR() = false` and BT.709/Gamma 2.2 colorimetry, preventing HDR passthrough to Moonlight clients. Fixed by making the headless connector check `g_bForceHDR10OutputDebug` (`--hdr-enabled` flag): when set, reports BT.2020/PQ colorimetry, initializes HDRInfo with 1000 nit max CLL / 800 nit FALL, and returns `IsHDRActive() = true`. The scanout export protocol already sends per-frame HDR metadata and colorspace fields, so Sunshine picks up HDR automatically. Enabled by default via `ENABLE_GAMESCOPE_HDR=1` env var (processed by `gamescope-session-plus`).
 
 ---
 
@@ -289,7 +292,7 @@ endif()
 | `gamescope/src/wlserver.hpp` | Added scanout client struct + function decl |
 | `gamescope/src/wlserver.cpp` | Protocol handlers + send_frame (~200 lines added) |
 | `gamescope/src/steamcompmgr.cpp` | Rate limiter, commit-skip, scanout hook, NoFilter |
-| `gamescope/src/Backends/HeadlessBackend.cpp` | DRM modifiers (LINEAR) for headless output, path-based libinput for container input devices, stale device cleanup for hotplug |
+| `gamescope/src/Backends/HeadlessBackend.cpp` | DRM modifiers (LINEAR) for headless output, path-based libinput for container input devices, stale device cleanup for hotplug, HDR10 support via `--hdr-enabled` flag (BT.2020/PQ, 1000 nit CLL) |
 | `gamescope/src/Backends/DeferredBackend.h` | Marked `CDeferredFb::Unwrap()` as `inline` (fixes ODR violation) |
 | `gamescope/src/pipewire.cpp` | Max framerate atomic + accessor |
 | `gamescope/src/pipewire.hpp` | pipewire_get_max_framerate() declaration |

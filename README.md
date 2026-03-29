@@ -78,13 +78,21 @@ The daemon also:
 
 ### Resolution and Refresh Rate
 
-Gamescope's headless backend does not support dynamic resolution changes (xrandr and wlr-randr mode switching are ignored). Instead, the output resolution is set at container startup via environment variables:
+The output resolution is set at container startup via environment variables:
 
 - `SCREEN_WIDTH` (default: 1920) — gamescope output width
 - `SCREEN_HEIGHT` (default: 1080) — gamescope output height
 - `CUSTOM_REFRESH_RATES` (default: 60,90,120) — available refresh rates
 
 To stream at a different resolution, restart the container with different values (e.g., `-e SCREEN_WIDTH=2560 -e SCREEN_HEIGHT=1440`).
+
+> **Runtime resolution changes** are not yet supported. The headless backend does not expose the `wlr-output-management` Wayland protocol, so wlr-randr cannot connect. This is planned for a future update.
+
+### HDR
+
+HDR10 output is enabled by default via the `--hdr-enabled` gamescope flag. The headless backend reports BT.2020/PQ colorimetry with 1000 nit max content light level. HDR metadata is sent per-frame through the scanout export protocol to Sunshine, which forwards it to the Moonlight client.
+
+To disable HDR, set `ENABLE_GAMESCOPE_HDR=0` in the podman run command (e.g., `-e ENABLE_GAMESCOPE_HDR=0`).
 
 ## Prerequisites
 
@@ -365,7 +373,7 @@ Host udev:   ATTRS{phys}=="container-*" OR ATTRS{name}=="Container *" →
 ## Known Limitations
 
 - **Rootless podman + input isolation**: The kernel blocks `mknod` for character devices in user namespaces. The `input-mknod-daemon` cannot create `/dev/input/` device nodes in rootless mode. Use rootful podman (`sudo podman run`) for multi-instance input isolation.
-- **No dynamic resolution**: Gamescope's headless backend does not support resolution changes after startup (xrandr and wlr-randr mode switching are ignored). Set `SCREEN_WIDTH`/`SCREEN_HEIGHT` at container start.
+- **No dynamic resolution**: Gamescope's headless backend does not expose the `wlr-output-management` protocol, so wlr-randr cannot change resolution/refresh at runtime. Set `SCREEN_WIDTH`/`SCREEN_HEIGHT` at container start. Runtime resolution support (via wlr-output-management or gamescope-private convars) is planned.
 - **Port mapping and pairing**: Sunshine's internal ports must match external ports for Moonlight pairing to work. Use 1:1 port mapping (e.g., `-p 57989:57989`) and set `port = <HTTPS_PORT>` in sunshine.conf. NAT-style mapping (e.g., `57989:47989`) causes "certificate mismatch" errors during pairing.
 - **Steam startup**: Steam in SteamOS mode may restart once during initial setup (~1-2 min). SteamOS compatibility stubs are included to prevent extended crash loops, but the first session restart is normal.
 - **Gamepad/hidraw hotplug**: The mknod daemon creates fake udev DB entries and sends synthetic netlink events (MurmurHash2 subsystem filter + `USEC_INITIALIZED`) for SDL/Steam gamepad discovery. Requires `CAP_NET_ADMIN` for the netlink socket.
