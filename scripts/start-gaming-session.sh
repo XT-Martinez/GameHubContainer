@@ -41,6 +41,19 @@ export ENABLE_GAMESCOPE_WSI="${ENABLE_GAMESCOPE_WSI:-1}"
 export GAMESCOPE_PATCHED_EDID_FILE="${XDG_RUNTIME_DIR}/gamescope-edid.bin"
 ${SUNSHINE_PORT:+export SUNSHINE_PORT=$SUNSHINE_PORT}
 
+# Write env vars to environment.d so gamescope-session-plus sources them.
+# gamescope-session-plus reads ~/.config/environment.d/*.conf with set -a,
+# ensuring variables like CUSTOM_REFRESH_RATES reach gamescope.
+mkdir -p "${HOME}/.config/environment.d"
+cat > "${HOME}/.config/environment.d/container.conf" <<ENVEOF
+CUSTOM_REFRESH_RATES=${CUSTOM_REFRESH_RATES}
+ENABLE_GAMESCOPE_HDR=${ENABLE_GAMESCOPE_HDR}
+ENABLE_GAMESCOPE_WSI=${ENABLE_GAMESCOPE_WSI}
+BACKEND=${BACKEND}
+LIBSEAT_BACKEND=${LIBSEAT_BACKEND}
+WLR_BACKENDS=${WLR_BACKENDS}
+ENVEOF
+
 systemctl --user import-environment 2>/dev/null || true
 systemctl --user set-environment \
     LIBSEAT_BACKEND="$LIBSEAT_BACKEND" \
