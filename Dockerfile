@@ -236,7 +236,7 @@ RUN --mount=type=cache,dst=/var/cache/libdnf5 \
         dbus dbus-x11 \
         xrandr \
         # Input
-        libevdev libinput \
+        libevdev libinput hidapi \
         # Sunshine runtime deps
         vulkan-loader vulkan-tools \
         libva libva-utils libdrm libcap \
@@ -248,6 +248,8 @@ RUN --mount=type=cache,dst=/var/cache/libdnf5 \
         mangohud vkBasalt \
         # Display control
         wlr-randr \
+        # Networking (SteamOS OOBE requires NetworkManager D-Bus API)
+        NetworkManager iproute \
         # System
         systemd acl \
         which evtest procps-ng util-linux \
@@ -317,7 +319,9 @@ RUN mkdir -p /etc/systemd/system/multi-user.target.wants && \
     ln -sf /etc/systemd/system/input-mknod.service \
         /etc/systemd/system/multi-user.target.wants/input-mknod.service && \
     ln -sf /etc/systemd/system/container-env.service \
-        /etc/systemd/system/multi-user.target.wants/container-env.service
+        /etc/systemd/system/multi-user.target.wants/container-env.service && \
+    ln -sf /usr/lib/systemd/system/NetworkManager.service \
+        /etc/systemd/system/multi-user.target.wants/NetworkManager.service
 
 # Default Sunshine config (system location — copied to user dir on first start)
 COPY configs/sunshine.conf /etc/sunshine/sunshine.conf.default
