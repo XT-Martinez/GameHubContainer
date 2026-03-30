@@ -17,6 +17,7 @@ set -euo pipefail
 
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export HOME="${HOME:-/home/gamer}"
+export PATH="/usr/local/bin:${PATH}"
 
 # Ensure XDG_RUNTIME_DIR exists
 mkdir -p "$XDG_RUNTIME_DIR"

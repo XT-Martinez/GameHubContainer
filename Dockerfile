@@ -126,7 +126,7 @@ RUN cmake -B build -G "Unix Makefiles" \
 # ============================================================
 FROM base AS shim-builder
 
-RUN dnf5 -y install gcc kernel-headers make systemd-devel
+RUN dnf5 -y install gcc glibc-devel.i686 kernel-headers libgcc.i686 make systemd-devel
 
 COPY container-input-shim/ /build/
 WORKDIR /build
@@ -273,6 +273,7 @@ COPY --from=sunshine-builder /build/install/ /
 
 # uinput isolation shim (phys tagging) + mknod daemon (device node creation)
 COPY --from=shim-builder /build/libuinput_shim.so /usr/lib64/libuinput_shim.so
+COPY --from=shim-builder /build/libuinput_shim32.so /usr/lib/libuinput_shim.so
 COPY --from=shim-builder /build/input-mknod-daemon /usr/local/bin/input-mknod-daemon
 COPY container-input-shim/99-sunshine-container-ignore.rules /etc/udev/rules.d/
 
@@ -307,7 +308,7 @@ RUN useradd -m -u ${GAMER_UID} -G video,render,input gamer && \
 COPY services/gaming-session.service services/sunshine.service \
     /etc/systemd/user/
 COPY scripts/ /usr/local/bin/
-RUN chmod +x /usr/local/bin/*.sh
+RUN chmod +x /usr/local/bin/*.sh /usr/local/bin/steam
 
 # Install system services (need real root for mknod/chmod in rootless podman)
 COPY services/device-permissions.service /etc/systemd/system/device-permissions.service

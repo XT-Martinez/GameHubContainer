@@ -44,6 +44,12 @@ An `LD_PRELOAD` library that **tags** every virtual input device created inside 
 
 When a process creates a virtual input device via `/dev/uinput` or `/dev/uhid`, the device appears globally in the kernel's input subsystem — visible to the host and other containers. The shim solves this by intercepting libc calls (`open`, `ioctl`, `write`) and overriding the `phys` field on every device with `container-<CONTAINER_ID>`.
 
+The image installs **both 64-bit and 32-bit variants** of the shim:
+- `/usr/lib64/libuinput_shim.so` for native 64-bit processes
+- `/usr/lib/libuinput_shim.so` for 32-bit processes such as Steam's main client bootstrap
+
+Steam is launched through a small wrapper that sets `LD_PRELOAD=/usr/$LIB/libuinput_shim.so`, letting the dynamic loader pick the correct shim for each process ABI. This is required for Steam Input virtual controllers created by the 32-bit Steam client to be tagged and mirrored back into the container's private `/dev/input`.
+
 This works for:
 - **uinput devices** (mouse, keyboard, gamepads via Inputtino and Steam Input): the shim intercepts `UI_SET_PHYS` and `UI_DEV_CREATE` ioctls
 - **UHID devices** (PS5 DualSense, Steam Input virtual controllers): the shim intercepts `write()` calls with `UHID_CREATE2` events and rewrites the `phys` field
@@ -307,7 +313,7 @@ podman run -d \
 ┌──────────────────────────────────────────────────────────────┐
 │  Container (rootful Podman recommended for multi-instance)    │
 │                                                              │
-│  LD_PRELOAD=libuinput_shim.so (Sunshine only)                │
+│  LD_PRELOAD=/usr/$LIB/libuinput_shim.so                      │
 │  CONTAINER_ID=sunshine-1                                     │
 │                                                              │
 │  ┌──────────────┐    Wayland      ┌──────────────────┐      │
@@ -330,7 +336,7 @@ podman run -d \
 │         │ uinput ioctl                     │ uinput         │
 │         ▼                                  ▼                │
 │  ┌──────────────────────────────────────────────────────┐   │
-│  │  libuinput_shim.so (LD_PRELOAD)                      │   │
+│  │  libuinput_shim.so (LD_PRELOAD, 32-bit + 64-bit)    │   │
 │  │  Tags phys="container-sunshine-1" on all devices      │   │
 │  │  (uinput via ioctl, UHID via write)                   │   │
 │  │  UHID: also prefixes name with "Container ",          │   │
