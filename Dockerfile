@@ -350,6 +350,9 @@ RUN mkdir -p /etc/systemd/user/gamescope-session-plus@steam.service.d && \
         'Environment=BACKEND=headless' \
         'Environment=ENABLE_GAMESCOPE_HDR=1' \
         'Environment=ENABLE_GAMESCOPE_WSI=1' \
+        'Environment=GAMESCOPE_PATCHED_EDID_FILE=/run/user/1000/gamescope-edid.bin' \
+        'Environment=DXVK_HDR=1' \
+        'Environment=ENABLE_HDR_WSI=1' \
         > /etc/systemd/user/gamescope-session-plus@steam.service.d/container-env.conf
 
 # Enable user services globally
