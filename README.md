@@ -17,20 +17,22 @@ A fork of [gamescope](https://github.com/ValveSoftware/gamescope) (Valve's micro
 
 Standard Sunshine capture on Wayland uses PipeWire, which forces gamescope to re-composite every frame into a PipeWire buffer — adding 13-21% GPU overhead. Our custom gamescope adds a `gamescope_scanout` Wayland protocol that exports its composited scanout buffer directly as DMA-BUF file descriptors. Sunshine connects to this protocol and reads the frames with zero copy, matching the performance of root-requiring KMS capture (~44% GPU) without needing any elevated privileges.
 
+Recent scanout fixes keep 90/120fps stable across Moonlight reconnects, expose HDR correctly to games via the patched EDID + `DXVK_HDR`, and avoid idle GPU usage by only forcing repaint during recent software-cursor movement instead of repainting every VBlank for the entire lifetime of a stream.
+
 **Key changes:**
 - New Wayland protocol: `gamescope-scanout.xml`
-- Server-side implementation in `wlserver.cpp`: per-client rate limiting, commit-skip, HDR metadata, triple-buffer safety
+- Server-side implementation in `wlserver.cpp`: per-client rate limiting, commit-skip, HDR metadata, triple-buffer safety, explicit unsubscribe for persistent clients
 - Integration hook in `steamcompmgr.cpp`: event-driven frame export after each paint cycle
 
 ### Custom Sunshine
 
 A fork of [Sunshine](https://github.com/LizardByte/Sunshine) (self-hosted game streaming server) with a **gamescope scanout capture backend**.
 
-Instead of going through PipeWire or requiring DRM access, this Sunshine build connects directly to gamescope's Wayland compositor and uses the `gamescope_scanout` protocol to receive frames. The capture backend maintains a persistent Wayland connection that survives display reinit cycles (HDR toggling, resolution changes), avoiding the ~400ms reconnection penalty.
+Instead of going through PipeWire or requiring DRM access, this Sunshine build connects directly to gamescope's Wayland compositor and uses the `gamescope_scanout` protocol to receive frames. The capture backend maintains a persistent Wayland connection that survives display reinit cycles (HDR toggling, resolution changes), avoiding the ~400ms reconnection penalty, while explicitly unsubscribing when the active display is torn down so idle connections do not keep gamescope repainting.
 
 **Key changes:**
 - New capture backend: `gamescopegrab.cpp` (~575 lines)
-- Persistent Wayland connection singleton that survives display reinit
+- Persistent Wayland connection singleton that survives display reinit, with explicit unsubscribe on teardown
 - Event-driven capture with per-frame HDR metadata
 - Priority in capture method selection: NvFBC > **Gamescope** > Wayland > KMS > X11
 
