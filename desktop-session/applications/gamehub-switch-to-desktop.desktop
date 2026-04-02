@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Switch to Desktop
+Comment=Close Steam Game Mode and open the nested desktop session
+Exec=/usr/local/bin/switch-to-desktop.sh
+Icon=computer
+Terminal=false
+Type=Application
+Categories=Game;System;
+Keywords=desktop;labwc;steam;

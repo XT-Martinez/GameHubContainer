@@ -1,0 +1,8 @@
+#!/bin/sh
+
+swaybg -i /usr/share/gamehub-desktop/assets/wallpaper.svg -m fill &
+mako &
+waybar -c /usr/share/gamehub-desktop/waybar/config.jsonc -s /usr/share/gamehub-desktop/waybar/style.css &
+thunar --daemon &
+thunar &
+env MOZ_ENABLE_WAYLAND=1 firefox &

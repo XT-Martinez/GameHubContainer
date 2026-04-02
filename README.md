@@ -106,6 +106,31 @@ The headless backend always advertises HDR10 capability (BT.2020/PQ, 1000 nit pe
 
 To disable HDR, set `ENABLE_GAMESCOPE_HDR=0` in the podman run command (e.g., `-e ENABLE_GAMESCOPE_HDR=0`).
 
+### Desktop Mode (Switch to Desktop)
+
+The container supports switching from Steam Game Mode to a full desktop environment and back — without restarting gamescope or the streaming session. This mirrors the "Switch to Desktop" feature on SteamOS/Steam Deck.
+
+**Architecture**: A `session-supervisor.sh` replaces the direct Steam launch as gamescope's `CLIENTCMD`. It manages a state machine that alternates between running Steam (game mode) and running a nested [labwc](https://labwc.github.io/) Wayland compositor (desktop mode). labwc connects to gamescope as a native Wayland client (`WLR_BACKENDS=wayland`), and gamescope's XDG focus fallback promotes it as the composited window when no X11 (Steam) window is focused.
+
+**Desktop environment**: labwc runs with waybar (taskbar), wofi (app launcher), mako (notifications), foot (terminal), thunar (file manager), and firefox. A custom GameHub theme provides a consistent dark-blue aesthetic.
+
+**Switching to desktop**:
+1. User selects "Switch to Desktop" from Steam's menu (installed as a non-Steam shortcut)
+2. `switch-to-desktop.sh` writes `desktop` to the mode-request file and sends `steam +quit`
+3. The session supervisor waits for Steam teardown, then launches labwc inside gamescope
+
+**Returning to Steam**:
+1. User clicks "Return to Steam" in waybar or presses `Super+Escape`
+2. `return-to-steam.sh` writes `steam` to the mode-request file and kills labwc
+3. The session supervisor shows a splash screen (via `foot` on gamescope's XDG shell) and launches Steam
+4. Once Steam's X11 window takes focus, the splash is no longer rendered
+
+**SteamOS compatibility**: `steamos-session-select` and `return-to-gamemode` are provided as shims that route to the appropriate switch/return scripts, so Steam's built-in "Switch to Desktop" button works without modification.
+
+**Gamescope changes for desktop mode**:
+- **XDG focus fallback** (`steamcompmgr.cpp`): When no X11 window has focus, the compositor promotes the highest-priority XDG toplevel (labwc) as the focus window for painting and scanout export
+- **XDG surface destroy fix** (`wlserver.cpp`): The destroy handler no longer returns early when `wl_surface` cleanup runs before `xdg_surface` cleanup during abrupt client disconnects, preventing a dangling-pointer crash that previously made returning to Steam crash gamescope
+
 ## Prerequisites
 
 ### Host Setup (required once)

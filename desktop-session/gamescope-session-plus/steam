@@ -1,0 +1,5 @@
+#!/usr/bin/bash
+
+. /usr/share/gamescope-session-plus/sessions.d/steam
+
+export CLIENTCMD="/usr/local/bin/session-supervisor.sh"

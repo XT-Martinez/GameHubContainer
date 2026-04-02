@@ -1,0 +1,34 @@
+{
+  "layer": "top",
+  "position": "bottom",
+  "height": 42,
+  "spacing": 10,
+  "margin-top": 0,
+  "margin-left": 10,
+  "margin-right": 10,
+  "margin-bottom": 10,
+  "modules-left": ["custom/launcher"],
+  "modules-center": ["wlr/taskbar"],
+  "modules-right": ["clock", "custom/steam"],
+  "custom/launcher": {
+    "format": " Apps ",
+    "tooltip": false,
+    "on-click": "/usr/local/bin/desktop-launcher.sh"
+  },
+  "wlr/taskbar": {
+    "icon-size": 18,
+    "tooltip-format": "{title}",
+    "on-click": "activate",
+    "on-click-middle": "close",
+    "ignore-list": ["wofi"]
+  },
+  "clock": {
+    "format": "{:%a %H:%M}",
+    "tooltip-format": "{:%Y-%m-%d %H:%M:%S}"
+  },
+  "custom/steam": {
+    "format": " Return to Steam ",
+    "tooltip": false,
+    "on-click": "/usr/local/bin/return-to-steam.sh"
+  }
+}

@@ -1,0 +1,80 @@
+<?xml version="1.0"?>
+<labwc_config>
+  <core>
+    <gap>10</gap>
+  </core>
+
+  <placement>
+    <policy>cascade</policy>
+    <cascadeOffset x="28" y="28" />
+  </placement>
+
+  <windowSwitcher preview="yes" outlines="yes">
+    <osd show="yes" style="thumbnail" output="focused" thumbnailLabelFormat="%T" />
+  </windowSwitcher>
+
+  <desktops>
+    <number>4</number>
+    <names>
+      <name>Main</name>
+      <name>Files</name>
+      <name>Web</name>
+      <name>Misc</name>
+    </names>
+    <popupTime>750</popupTime>
+  </desktops>
+
+  <theme>
+    <name>GameHub</name>
+    <cornerRadius>12</cornerRadius>
+    <dropShadows>yes</dropShadows>
+    <dropShadowsOnTiled>no</dropShadowsOnTiled>
+    <maximizedDecoration>titlebar</maximizedDecoration>
+    <titlebar>
+      <layout>icon:iconify,max,close</layout>
+    </titlebar>
+    <font place="ActiveWindow">
+      <name>Sans</name>
+      <size>11</size>
+      <weight>Medium</weight>
+    </font>
+    <font place="InactiveWindow">
+      <name>Sans</name>
+      <size>11</size>
+    </font>
+    <font place="OnScreenDisplay">
+      <name>Sans</name>
+      <size>11</size>
+      <weight>Medium</weight>
+    </font>
+  </theme>
+
+  <keyboard>
+    <default />
+    <repeatRate>30</repeatRate>
+    <repeatDelay>300</repeatDelay>
+
+    <keybind key="W-space">
+      <action name="Execute" command="/usr/local/bin/desktop-launcher.sh" />
+    </keybind>
+    <keybind key="W-Return">
+      <action name="Execute" command="/usr/bin/foot" />
+    </keybind>
+    <keybind key="W-e">
+      <action name="Execute" command="/usr/bin/thunar" />
+    </keybind>
+    <keybind key="W-b">
+      <action name="Execute" command="env MOZ_ENABLE_WAYLAND=1 /usr/bin/firefox" />
+    </keybind>
+    <keybind key="W-s">
+      <action name="Execute" command="/usr/local/bin/desktop-steam.sh" />
+    </keybind>
+    <keybind key="W-Escape">
+      <action name="Execute" command="/usr/local/bin/return-to-steam.sh" />
+    </keybind>
+  </keyboard>
+
+  <mouse>
+    <default />
+  </mouse>
+</labwc_config>

@@ -1,0 +1,54 @@
+border.width: 1
+
+window.titlebar.padding.width: 10
+window.titlebar.padding.height: 8
+window.button.width: 24
+window.button.height: 24
+window.button.spacing: 6
+window.button.hover.bg.color: #ffffff18
+window.button.hover.bg.corner-radius: 12
+
+window.active.border.color: #7c93ff
+window.inactive.border.color: #2b3340
+
+window.active.title.bg: Solid
+window.active.title.bg.color: #141922
+window.inactive.title.bg: Solid
+window.inactive.title.bg.color: #10151d
+
+window.active.label.text.color: #f5f7fb
+window.inactive.label.text.color: #9aa7b7
+window.label.text.justify: Left
+
+window.active.button.unpressed.image.color: #dbe4ff
+window.inactive.button.unpressed.image.color: #90a0b4
+
+window.active.shadow.size: 40
+window.active.shadow.color: #00000070
+window.inactive.shadow.size: 28
+window.inactive.shadow.color: #00000044
+
+menu.border.width: 1
+menu.border.color: #2d3745
+menu.items.bg.color: #121821
+menu.items.text.color: #f5f7fb
+menu.items.active.bg.color: #273247
+menu.items.active.text.color: #ffffff
+menu.separator.color: #2d3745
+menu.title.bg.color: #111722
+menu.title.text.color: #f5f7fb
+
+osd.bg.color: #111722
+osd.border.color: #2d3745
+osd.border.width: 1
+osd.label.text.color: #f5f7fb
+
+osd.window-switcher.style-thumbnail.padding: 10
+osd.window-switcher.style-thumbnail.item.width: 260
+osd.window-switcher.style-thumbnail.item.height: 200
+osd.window-switcher.style-thumbnail.item.active.border.width: 2
+osd.window-switcher.style-thumbnail.item.active.border.color: #7c93ffcc
+osd.window-switcher.style-thumbnail.item.active.bg.color: #7c93ff22
+
+snapping.overlay.region.bg.color: #7c93ff33
+snapping.overlay.edge.bg.color: #7c93ff33

@@ -235,6 +235,9 @@ RUN --mount=type=cache,dst=/var/cache/libdnf5 \
         xorg-x11-server-Xwayland \
         dbus dbus-x11 \
         xrandr \
+        labwc waybar wofi swaybg mako foot \
+        thunar firefox \
+        adwaita-icon-theme \
         # Input
         libevdev libinput hidapi \
         # Sunshine runtime deps
@@ -261,7 +264,12 @@ RUN --mount=type=cache,dst=/var/cache/libdnf5 \
         && \
     mkdir -p /usr/share/sdl/ && \
     curl --retry 3 -Lo /usr/share/sdl/gamecontrollerdb.txt \
-        https://raw.githubusercontent.com/mdqinc/SDL_GameControllerDB/refs/heads/master/gamecontrollerdb.txt
+        https://raw.githubusercontent.com/mdqinc/SDL_GameControllerDB/refs/heads/master/gamecontrollerdb.txt && \
+    rm -f \
+        /usr/share/dbus-1/services/fr.emersion.mako.service \
+        /etc/xdg/autostart/mako.desktop \
+        /etc/xdg/autostart/fr.emersion.mako.desktop \
+        /usr/share/applications/fr.emersion.mako.desktop
 
 # ── Overlay custom-built binaries ─────────────────────────────
 
@@ -308,7 +316,23 @@ RUN useradd -m -u ${GAMER_UID} -G video,render,input gamer && \
 COPY services/gaming-session.service services/sunshine.service \
     /etc/systemd/user/
 COPY scripts/ /usr/local/bin/
-RUN chmod +x /usr/local/bin/*.sh /usr/local/bin/steam
+COPY desktop-session/bin/ /usr/local/bin/
+COPY desktop-session/labwc/ /usr/share/gamehub-desktop/labwc/
+COPY desktop-session/waybar/ /usr/share/gamehub-desktop/waybar/
+COPY desktop-session/wofi/ /usr/share/gamehub-desktop/wofi/
+COPY desktop-session/assets/ /usr/share/gamehub-desktop/assets/
+COPY desktop-session/themes/GameHub/ /usr/share/themes/GameHub/
+COPY desktop-session/applications/ /usr/share/applications/
+COPY desktop-session/gamescope-session-plus/steam /usr/share/gamehub-desktop/steam.session
+RUN mkdir -p /usr/share/applications/steam && \
+    mkdir -p /etc/gamescope-session-plus/sessions.d && \
+    cp /usr/share/applications/gamehub-switch-to-desktop.desktop \
+       /usr/share/applications/steam/gamehub-switch-to-desktop.desktop && \
+    install -m 0644 /usr/share/gamehub-desktop/steam.session \
+       /etc/gamescope-session-plus/sessions.d/steam && \
+    ln -sf /usr/local/bin/steamos-session-select /usr/bin/steamos-session-select && \
+    ln -sf /usr/local/bin/return-to-gamemode /usr/bin/return-to-gamemode && \
+    chmod +x /usr/local/bin/*.sh /usr/local/bin/steam /usr/local/bin/session-supervisor.sh /usr/local/bin/start-desktop-session.sh /usr/local/bin/desktop-launcher.sh /usr/local/bin/desktop-steam.sh /usr/local/bin/switch-to-desktop.sh /usr/local/bin/return-to-steam.sh /usr/local/bin/steamos-session-select /usr/local/bin/return-to-gamemode /usr/share/gamehub-desktop/labwc/autostart
 
 # Install system services (need real root for mknod/chmod in rootless podman)
 COPY services/device-permissions.service /etc/systemd/system/device-permissions.service

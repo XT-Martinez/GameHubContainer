@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(find /var/mnt/DATA/repo/GameHubContainer -type f \\\\\\(-name *.vdf -o -name *.json -o -name config \\\\\\))",
+      "Bash(grep -r bootstrap /var/mnt/DATA/repo/GameHubContainer --include=*.sh --include=*.service --include=*.md)",
+      "Bash(grep -n wlr_output_manager /var/mnt/DATA/repo/GameHubContainer/gamescope/src/*.cpp /var/mnt/DATA/repo/GameHubContainer/gamescope/src/*.hpp)",
+      "Bash(grep *)"
+    ]
+  }
+}
