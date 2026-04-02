@@ -42,6 +42,15 @@ export ENABLE_GAMESCOPE_WSI="${ENABLE_GAMESCOPE_WSI:-1}"
 export GAMESCOPE_PATCHED_EDID_FILE="${XDG_RUNTIME_DIR}/gamescope-edid.bin"
 ${SUNSHINE_PORT:+export SUNSHINE_PORT=$SUNSHINE_PORT}
 
+# Generate a deterministic MAC address from CONTAINER_ID for Sunshine.
+# Uses locally-administered bit (02:xx:xx:xx:xx:xx) to avoid colliding
+# with real hardware MACs. Containers often lack a real NIC in sysfs,
+# causing Sunshine to return 00:00:00:00:00:00 which breaks Moonlight.
+if [ -z "${SUNSHINE_MAC_ADDRESS:-}" ]; then
+    SUNSHINE_MAC_ADDRESS=$(printf '%s' "$CONTAINER_ID" | md5sum | sed 's/^\(..\)\(..\)\(..\)\(..\)\(..\).*$/02:\1:\2:\3:\4:\5/')
+fi
+export SUNSHINE_MAC_ADDRESS
+
 # Write env vars to environment.d so gamescope-session-plus sources them.
 # gamescope-session-plus reads ~/.config/environment.d/*.conf with set -a,
 # ensuring variables like CUSTOM_REFRESH_RATES reach gamescope.
@@ -70,6 +79,7 @@ systemctl --user set-environment \
     ENABLE_GAMESCOPE_HDR="$ENABLE_GAMESCOPE_HDR" \
     ENABLE_GAMESCOPE_WSI="$ENABLE_GAMESCOPE_WSI" \
     GAMESCOPE_PATCHED_EDID_FILE="$GAMESCOPE_PATCHED_EDID_FILE" \
+    SUNSHINE_MAC_ADDRESS="$SUNSHINE_MAC_ADDRESS" \
     ${SUNSHINE_PORT:+SUNSHINE_PORT=$SUNSHINE_PORT}
 
 exec gamescope-session-plus steam
