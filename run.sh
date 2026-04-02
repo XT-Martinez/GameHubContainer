@@ -17,22 +17,30 @@ echo "Resolution: ${SCREEN_WIDTH:-1920}x${SCREEN_HEIGHT:-1080}"
 # Build port args
 PORT_ARGS=()
 if [[ -n "$PORT" ]]; then
-    HTTP=$((PORT - 5))
-    HTTPS=$((PORT + 1))
-    RTSP=$PORT
-    CONTROL=$((PORT + 21))
-    VIDEO=$((PORT + 9))
-    AUDIO=$((PORT + 10))
-    MIC=$((PORT + 11))
+    # Sunshine port offsets from the base port (config.port):
+    #   +0  PORT_HTTP          Moonlight discovery (mDNS-advertised)
+    #   -5  PORT_HTTPS         Moonlight HTTPS / pairing
+    #   +1  confighttp HTTPS   Sunshine web UI
+    #   +21 RTSP_SETUP_PORT    RTSP session setup
+    #   +9  VIDEO_STREAM_PORT  Video stream (UDP)
+    #   +10 CONTROL_PORT       Control channel (UDP)
+    #   +11 AUDIO_STREAM_PORT  Audio stream (UDP)
+    P_HTTP=$((PORT))
+    P_HTTPS=$((PORT - 5))
+    P_WEB=$((PORT + 1))
+    P_RTSP=$((PORT + 21))
+    P_VIDEO=$((PORT + 9))
+    P_CONTROL=$((PORT + 10))
+    P_AUDIO=$((PORT + 11))
     PORT_ARGS=(
         -e "SUNSHINE_PORT=${PORT}"
-        -p "${HTTP}:${HTTP}/tcp"
-        -p "${HTTPS}:${HTTPS}/tcp"
-        -p "${RTSP}:${RTSP}/tcp"
-        -p "${CONTROL}:${CONTROL}/tcp"
-        -p "${VIDEO}:${VIDEO}/udp"
-        -p "${AUDIO}:${AUDIO}/udp"
-        -p "${MIC}:${MIC}/udp"
+        -p "${P_HTTP}:${P_HTTP}/tcp"
+        -p "${P_HTTPS}:${P_HTTPS}/tcp"
+        -p "${P_WEB}:${P_WEB}/tcp"
+        -p "${P_RTSP}:${P_RTSP}/tcp"
+        -p "${P_VIDEO}:${P_VIDEO}/udp"
+        -p "${P_CONTROL}:${P_CONTROL}/udp"
+        -p "${P_AUDIO}:${P_AUDIO}/udp"
     )
 else
     # Default ports — use host networking
@@ -91,4 +99,4 @@ trap cleanup EXIT
 
 echo "${NAME} started (mDNS: ${NAME}/_nvstream._tcp:${MDNS_PORT})"
 echo "Logs: sudo podman exec -u gamer ${NAME} bash -c 'XDG_RUNTIME_DIR=/run/user/1000 journalctl --user -f'"
-#sudo podman exec -u gamer ${NAME} bash -c 'XDG_RUNTIME_DIR=/run/user/1000 journalctl --user -f'
+sudo podman exec -u gamer ${NAME} bash -c 'XDG_RUNTIME_DIR=/run/user/1000 journalctl --user -f'
