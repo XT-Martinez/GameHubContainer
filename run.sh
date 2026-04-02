@@ -63,5 +63,32 @@ sudo podman run -d --rm \
     --security-opt label=disable \
     gamehub-container:latest
 
-echo "${NAME} started. Logs: sudo podman exec -u gamer ${NAME} bash -c 'XDG_RUNTIME_DIR=/run/user/1000 journalctl --user -f'"
-sudo podman exec -u gamer ${NAME} bash -c 'XDG_RUNTIME_DIR=/run/user/1000 journalctl --user -f
+# Advertise via mDNS so Moonlight discovers this instance immediately.
+# Sunshine inside the container can't do this itself (no avahi libraries,
+# and in bridge mode multicast doesn't cross the network namespace anyway).
+# Wait for Sunshine to be listening before publishing — otherwise Moonlight
+# discovers the service, gets connection-refused, and retries on a slow interval.
+MDNS_PORT="${PORT:-47989}"
+(
+    echo "Waiting for Sunshine to listen on port ${MDNS_PORT}..."
+    for i in $(seq 1 60); do
+        if ss -tlnH "sport = :${MDNS_PORT}" | grep -q .; then
+            echo "Sunshine ready — publishing mDNS: ${NAME}/_nvstream._tcp:${MDNS_PORT}"
+            exec avahi-publish-service "${NAME}" _nvstream._tcp "${MDNS_PORT}"
+        fi
+        sleep 1
+    done
+    echo "WARNING: Sunshine did not start within 60s, publishing mDNS anyway"
+    exec avahi-publish-service "${NAME}" _nvstream._tcp "${MDNS_PORT}"
+) &
+AVAHI_PID=$!
+
+# Auto-cleanup mDNS advertisement when the container stops
+(sudo podman wait "${NAME}" >/dev/null 2>&1; kill "${AVAHI_PID}" 2>/dev/null) &
+
+cleanup() { kill "${AVAHI_PID}" 2>/dev/null; }
+trap cleanup EXIT
+
+echo "${NAME} started (mDNS: ${NAME}/_nvstream._tcp:${MDNS_PORT})"
+echo "Logs: sudo podman exec -u gamer ${NAME} bash -c 'XDG_RUNTIME_DIR=/run/user/1000 journalctl --user -f'"
+#sudo podman exec -u gamer ${NAME} bash -c 'XDG_RUNTIME_DIR=/run/user/1000 journalctl --user -f'
