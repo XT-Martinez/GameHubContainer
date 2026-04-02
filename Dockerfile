@@ -235,9 +235,10 @@ RUN --mount=type=cache,dst=/var/cache/libdnf5 \
         xorg-x11-server-Xwayland \
         dbus dbus-x11 \
         xrandr \
-        labwc waybar wofi swaybg mako foot \
-        thunar firefox \
-        adwaita-icon-theme \
+        labwc waybar wofi swaybg mako foot fuzzel \
+        thunar gvfs xfconf tumbler firefox \
+        adwaita-icon-theme papirus-icon-theme \
+        grim slurp wl-clipboard xdg-utils \
         # Input
         libevdev libinput hidapi \
         # Sunshine runtime deps
@@ -262,6 +263,9 @@ RUN --mount=type=cache,dst=/var/cache/libdnf5 \
         glibc-langpack-en pciutils \
         # SDL controller database
         && \
+    # Heroic Games Launcher (Epic/GOG/Amazon)
+    dnf5 -y copr enable atim/heroic-games-launcher && \
+    dnf5 -y install heroic-games-launcher-bin && \
     mkdir -p /usr/share/sdl/ && \
     curl --retry 3 -Lo /usr/share/sdl/gamecontrollerdb.txt \
         https://raw.githubusercontent.com/mdqinc/SDL_GameControllerDB/refs/heads/master/gamecontrollerdb.txt && \
@@ -320,6 +324,9 @@ COPY desktop-session/bin/ /usr/local/bin/
 COPY desktop-session/labwc/ /usr/share/gamehub-desktop/labwc/
 COPY desktop-session/waybar/ /usr/share/gamehub-desktop/waybar/
 COPY desktop-session/wofi/ /usr/share/gamehub-desktop/wofi/
+COPY desktop-session/mako/ /usr/share/gamehub-desktop/mako/
+COPY desktop-session/foot/ /usr/share/gamehub-desktop/foot/
+COPY desktop-session/fuzzel/ /usr/share/gamehub-desktop/fuzzel/
 COPY desktop-session/assets/ /usr/share/gamehub-desktop/assets/
 COPY desktop-session/themes/GameHub/ /usr/share/themes/GameHub/
 COPY desktop-session/applications/ /usr/share/applications/

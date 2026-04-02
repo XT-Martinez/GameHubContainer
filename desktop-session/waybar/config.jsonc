@@ -1,33 +1,37 @@
 {
   "layer": "top",
   "position": "bottom",
-  "height": 42,
-  "spacing": 10,
+  "height": 44,
+  "spacing": 8,
   "margin-top": 0,
   "margin-left": 10,
   "margin-right": 10,
   "margin-bottom": 10,
-  "modules-left": ["custom/launcher"],
-  "modules-center": ["wlr/taskbar"],
-  "modules-right": ["clock", "custom/steam"],
+  "modules-left": ["custom/launcher", "wlr/taskbar"],
+  "modules-center": [],
+  "modules-right": ["tray", "clock", "custom/steam"],
   "custom/launcher": {
-    "format": " Apps ",
+    "format": "\u2630  Apps",
     "tooltip": false,
     "on-click": "/usr/local/bin/desktop-launcher.sh"
   },
   "wlr/taskbar": {
-    "icon-size": 18,
+    "icon-size": 20,
     "tooltip-format": "{title}",
     "on-click": "activate",
     "on-click-middle": "close",
-    "ignore-list": ["wofi"]
+    "ignore-list": ["wofi", "fuzzel"]
+  },
+  "tray": {
+    "icon-size": 18,
+    "spacing": 8
   },
   "clock": {
-    "format": "{:%a %H:%M}",
-    "tooltip-format": "{:%Y-%m-%d %H:%M:%S}"
+    "format": "{:%a  %H:%M}",
+    "tooltip-format": "{:%Y-%m-%d  %H:%M:%S}"
   },
   "custom/steam": {
-    "format": " Return to Steam ",
+    "format": "\u25c0  Steam",
     "tooltip": false,
     "on-click": "/usr/local/bin/return-to-steam.sh"
   }

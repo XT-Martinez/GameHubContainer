@@ -1,0 +1,22 @@
+font=Sans 11
+background-color=#141922ee
+text-color=#f5f7fb
+border-color=#7c93ff88
+border-size=2
+border-radius=14
+padding=14
+margin=12
+width=380
+default-timeout=5000
+icon-path=/usr/share/icons/Papirus-Dark
+max-icon-size=48
+layer=overlay
+anchor=top-right
+
+[urgency=low]
+border-color=#2d374588
+default-timeout=3000
+
+[urgency=critical]
+border-color=#ff6b6b88
+default-timeout=0

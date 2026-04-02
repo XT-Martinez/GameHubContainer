@@ -1,7 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
-exec /usr/bin/wofi \
-    --show drun \
-    --prompt "Applications" \
-    --style /usr/share/gamehub-desktop/wofi/style.css
+# Toggle: if fuzzel is already open, kill it; otherwise launch it.
+if pkill -x fuzzel 2>/dev/null; then
+    exit 0
+fi
+
+exec /usr/bin/fuzzel \
+    --config=/usr/share/gamehub-desktop/fuzzel/fuzzel.ini

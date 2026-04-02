@@ -54,21 +54,42 @@
     <repeatRate>30</repeatRate>
     <repeatDelay>300</repeatDelay>
 
+    <!-- App launcher (toggle) -->
     <keybind key="W-space">
       <action name="Execute" command="/usr/local/bin/desktop-launcher.sh" />
     </keybind>
+
+    <!-- Terminal with GameHub theme -->
     <keybind key="W-Return">
-      <action name="Execute" command="/usr/bin/foot" />
+      <action name="Execute" command="/usr/bin/foot --config=/usr/share/gamehub-desktop/foot/foot.ini" />
     </keybind>
+
+    <!-- File manager -->
     <keybind key="W-e">
       <action name="Execute" command="/usr/bin/thunar" />
     </keybind>
+
+    <!-- Browser -->
     <keybind key="W-b">
-      <action name="Execute" command="env MOZ_ENABLE_WAYLAND=1 /usr/bin/firefox" />
+      <action name="Execute" command="/usr/bin/firefox" />
     </keybind>
+
+    <!-- Desktop Steam client -->
     <keybind key="W-s">
       <action name="Execute" command="/usr/local/bin/desktop-steam.sh" />
     </keybind>
+
+    <!-- Screenshot: area select to clipboard -->
+    <keybind key="W-S-s">
+      <action name="Execute" command="sh -c 'grim -g &quot;$(slurp)&quot; - | wl-copy'" />
+    </keybind>
+
+    <!-- Screenshot: full screen to clipboard -->
+    <keybind key="Print">
+      <action name="Execute" command="sh -c 'grim - | wl-copy'" />
+    </keybind>
+
+    <!-- Return to Steam game mode -->
     <keybind key="W-Escape">
       <action name="Execute" command="/usr/local/bin/return-to-steam.sh" />
     </keybind>

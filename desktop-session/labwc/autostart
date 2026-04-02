@@ -1,8 +1,13 @@
 #!/bin/sh
 
+# Match the nested desktop resolution to gamescope's output.
+W="${SCREEN_WIDTH:-1920}"
+H="${SCREEN_HEIGHT:-1080}"
+wlr-randr --output WL-1 --custom-mode "${W}x${H}" 2>/dev/null &
+
 swaybg -i /usr/share/gamehub-desktop/assets/wallpaper.svg -m fill &
-mako &
-waybar -c /usr/share/gamehub-desktop/waybar/config.jsonc -s /usr/share/gamehub-desktop/waybar/style.css &
-thunar --daemon &
-thunar &
-env MOZ_ENABLE_WAYLAND=1 firefox &
+
+mako --config /usr/share/gamehub-desktop/mako/config &
+
+waybar -c /usr/share/gamehub-desktop/waybar/config.jsonc \
+       -s /usr/share/gamehub-desktop/waybar/style.css &

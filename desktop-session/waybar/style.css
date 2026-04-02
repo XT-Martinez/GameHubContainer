@@ -14,18 +14,24 @@ window#waybar {
 #custom-launcher,
 #workspaces,
 #taskbar,
+#tray,
 #clock,
 #custom-steam {
   background: rgba(15, 20, 28, 0.92);
-  border: 1px solid rgba(121, 142, 191, 0.22);
+  border: 1px solid rgba(121, 142, 191, 0.18);
   border-radius: 14px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.32);
 }
 
 #custom-launcher,
 #clock,
 #custom-steam {
-  padding: 0 14px;
+  padding: 0 16px;
+}
+
+#custom-launcher {
+  color: #a0b4ff;
+  font-weight: bold;
 }
 
 #workspaces {
@@ -52,7 +58,7 @@ window#waybar {
 }
 
 #taskbar {
-  padding: 0 10px;
+  padding: 0 8px;
 }
 
 #taskbar button {
@@ -66,10 +72,27 @@ window#waybar {
   background: rgba(124, 147, 255, 0.18);
 }
 
+#tray {
+  padding: 0 12px;
+}
+
+#tray > .passive {
+  -gtk-icon-effect: dim;
+}
+
+#tray > .needs-attention {
+  -gtk-icon-effect: highlight;
+}
+
 #clock {
   color: #c8d2df;
 }
 
 #custom-steam {
-  color: #eff4ff;
+  color: #a0b4ff;
+  font-weight: bold;
+}
+
+#custom-steam:hover {
+  color: #ffffff;
 }
