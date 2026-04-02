@@ -106,6 +106,15 @@ The headless backend always advertises HDR10 capability (BT.2020/PQ, 1000 nit pe
 
 To disable HDR, set `ENABLE_GAMESCOPE_HDR=0` in the podman run command (e.g., `-e ENABLE_GAMESCOPE_HDR=0`).
 
+### Sleep / DPMS
+
+Steam's idle sleep settings work inside the container. When sleep triggers, gamescope enters DPMS mode (black screen, no frames streamed). On real hardware the power button resumes the system; in a container, gamescope instead wakes automatically when:
+
+- A Moonlight client reconnects (scanout subscribe)
+- Any keyboard or mouse input arrives from the streaming client
+
+This means you can let Steam sleep normally — just reconnect from Moonlight or move the mouse to wake it up. No need to set sleep to "never".
+
 ### Desktop Mode (Switch to Desktop)
 
 The container supports switching from Steam Game Mode to a full desktop environment and back — without restarting gamescope or the streaming session. This mirrors the "Switch to Desktop" feature on SteamOS/Steam Deck.
