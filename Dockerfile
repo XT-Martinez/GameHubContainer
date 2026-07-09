@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 #
 # Sunshine + Gamescope + Steam container image
-# Fedora 43 base with Valve's patched Mesa/PipeWire from Bazzite COPRs
+# Fedora 44 base with Valve's patched Mesa/PipeWire from Bazzite COPRs
 #
 # Expected build context (repo root with submodules):
 #   gamescope/              - custom gamescope source
@@ -22,7 +22,7 @@
 #     --build-context scripts=sunshine-container/scripts \
 #     -t sunshine-gamescope .
 
-ARG FEDORA_VERSION=43
+ARG FEDORA_VERSION=44
 
 # ============================================================
 # Common base with fast mirrors
@@ -73,7 +73,7 @@ FROM base AS sunshine-builder
 
 RUN --mount=type=cache,dst=/var/cache/libdnf5 \
     dnf5 -y install \
-    cmake gcc14 gcc14-c++ git wget which \
+    cmake gcc gcc-c++ libstdc++-static git wget which \
     libcap-devel libcurl-devel libdrm-devel libevdev-devel \
     libnotify-devel libva-devel \
     libX11-devel libxcb-devel libXcursor-devel libXfixes-devel \
@@ -92,7 +92,7 @@ RUN --mount=type=cache,dst=/var/cache/libdnf5 \
 COPY Sunshine/ /build/sunshine/
 WORKDIR /build/sunshine
 
-ENV CC=gcc-14 CXX=g++-14
+ENV CC=gcc CXX=g++
 
 # Fix NVENC compatibility with newer nv-codec-headers pulled by FetchContent.
 # This is a no-op on AMD but must compile for the runtime detection code path.
@@ -126,7 +126,7 @@ RUN cmake -B build -G "Unix Makefiles" \
 # ============================================================
 FROM base AS shim-builder
 
-RUN dnf5 -y install gcc glibc-devel.i686 kernel-headers libgcc.i686 make systemd-devel
+RUN dnf5 -y install gcc glibc-devel.i686 kernel-headers libatomic libatomic.i686 libgcc.i686 make systemd-devel
 
 COPY container-input-shim/ /build/
 WORKDIR /build
@@ -198,20 +198,30 @@ RUN --mount=type=cache,dst=/var/cache/libdnf5 \
 # ── Gamescope (COPR version for runtime deps, binary overridden later) ──
 RUN --mount=type=cache,dst=/var/cache/libdnf5 \
     dnf5 --enable-repo=terra -y install \
-        gamescope.x86_64 \
-        gamescope-libs.x86_64 \
-        gamescope-shaders
+        gamescope.x86_64
 
 # ── Gamescope session management ──────────────────────────────
 RUN --mount=type=cache,dst=/var/cache/libdnf5 \
+    dnf5 -y install \
+        switcheroo-control \
+        gamescope-session \
+        gamescope-session-steam && \
     mkdir -p /usr/share/gamescope-session-plus/ && \
     curl --retry 3 -Lo /usr/share/gamescope-session-plus/bootstrap_steam.tar.gz \
         https://large-package-sources.nobaraproject.org/bootstrap_steam.tar.gz && \
-    dnf5 -y install switcheroo-control && \
-    dnf5 -y install \
-        --repo copr:copr.fedorainfracloud.org:ublue-os:bazzite \
-        gamescope-session-plus \
-        gamescope-session-steam
+    if [ -d /usr/share/gamescope-session ] && [ ! -e /usr/share/gamescope-session-plus/sessions.d ]; then \
+        ln -s /usr/share/gamescope-session/sessions.d /usr/share/gamescope-session-plus/sessions.d; \
+    fi && \
+    if ! command -v gamescope-session-plus >/dev/null && command -v gamescope-session >/dev/null; then \
+        printf '%s\n' '#!/bin/sh' 'exec gamescope-session "$@"' > /usr/local/bin/gamescope-session-plus && \
+        chmod +x /usr/local/bin/gamescope-session-plus; \
+    fi && \
+    if [ -f /usr/lib/systemd/user/gamescope-session@.service ] && \
+       [ ! -e /etc/systemd/user/gamescope-session-plus@.service ]; then \
+        mkdir -p /etc/systemd/user && \
+        ln -s /usr/lib/systemd/user/gamescope-session@.service \
+            /etc/systemd/user/gamescope-session-plus@.service; \
+    fi
 
 # ── Steam ─────────────────────────────────────────────────────
 # Steam's 32-bit updater binary needs i686 Mesa GL libraries to render its

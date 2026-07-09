@@ -192,7 +192,7 @@ This is a multi-stage build:
 1. **gamescope-builder**: Compiles custom gamescope with Meson (~5 min)
 2. **sunshine-builder**: Compiles custom Sunshine with CMake, fetches Boost/FFmpeg via FetchContent (~10 min)
 3. **shim-builder**: Compiles the uinput tagging shim and mknod daemon (~5 sec)
-4. **runtime**: Fedora 43 with Valve's Mesa/PipeWire from Bazzite COPRs, Steam, and the built binaries
+4. **runtime**: Fedora 44 with Valve's Mesa/PipeWire from Bazzite COPRs, Steam, and the built binaries
 
 Subsequent builds are faster due to Docker layer caching.
 
@@ -220,6 +220,7 @@ sudo podman run -d \
     -v sunshine-steam:/home/gamer/.steam \
     -v sunshine-local:/home/gamer/.local/share/Steam \
     -v sunshine-config:/home/gamer/.config/sunshine \
+    -v /var/mnt/DATA:/mnt/DATA:rw,rslave \
     -e CONTAINER_ID=sunshine-1 \
     -e SCREEN_WIDTH=1920 \
     -e SCREEN_HEIGHT=1080 \
@@ -233,6 +234,8 @@ sudo podman run -d \
 Each instance needs a unique `CONTAINER_ID`, unique Sunshine port range, and separate storage volumes.
 
 **Important**: Sunshine's internal ports must match the external ports. Use the `SUNSHINE_PORT` environment variable to set the base port (e.g., `-e SUNSHINE_PORT=57989`). Sunshine derives all other ports from this base (HTTP = port - 5, RTSP = port + 21, etc.). Use 1:1 port mapping so Moonlight can reach all ports correctly during pairing.
+
+`run.sh` also starts a detached host-side mDNS publisher for Moonlight discovery. It advertises the same service native Sunshine uses: `<container-name>._nvstream._tcp` on the Sunshine HTTP port. Publisher logs are written to `/tmp/gamehub-mdns-<container-name>.log`.
 
 ```bash
 # Instance 1 — default ports (47984-48010)
@@ -248,6 +251,7 @@ sudo podman run -d --name sunshine-1 \
     -v s1-steam:/home/gamer/.steam \
     -v s1-local:/home/gamer/.local/share/Steam \
     -v s1-config:/home/gamer/.config/sunshine \
+    -v /var/mnt/DATA:/mnt/DATA:rw,rslave \
     -e CONTAINER_ID=sunshine-1 \
     -e SCREEN_WIDTH=1920 \
     -e SCREEN_HEIGHT=1080 \
@@ -269,6 +273,7 @@ sudo podman run -d --name sunshine-2 \
     -v s2-steam:/home/gamer/.steam \
     -v s2-local:/home/gamer/.local/share/Steam \
     -v s2-config:/home/gamer/.config/sunshine \
+    -v /var/mnt/DATA:/mnt/DATA:rw,rslave \
     -e CONTAINER_ID=sunshine-2 \
     -e SUNSHINE_PORT=57989 \
     -e SCREEN_WIDTH=1920 \
