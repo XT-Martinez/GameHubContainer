@@ -10,9 +10,20 @@ INSTANCE="${1:-1}"
 PORT="${2:-}"
 NAME="sunshine-${INSTANCE}"
 HIDRAW_MAJOR=$(grep hidraw /proc/devices | awk '{print $1}')
+SUNSHINE_MAC_ADDRESS="${SUNSHINE_MAC_ADDRESS:-$(printf '%s' "${NAME}" | md5sum | sed 's/^\(..\)\(..\)\(..\)\(..\)\(..\).*$/02:\1:\2:\3:\4:\5/')}"
+HOST_DATA_PATH="${HOST_DATA_PATH:-/var/mnt/DATA}"
+IMAGE="${IMAGE:-gamehub-container:latest}"
+
+if [[ ! -d "${HOST_DATA_PATH}" ]]; then
+    echo "ERROR: HOST_DATA_PATH does not exist: ${HOST_DATA_PATH}" >&2
+    exit 1
+fi
 
 echo "Container Name: $NAME"
+echo "Image: ${IMAGE}"
 echo "Resolution: ${SCREEN_WIDTH:-1920}x${SCREEN_HEIGHT:-1080}"
+echo "Sunshine MAC: ${SUNSHINE_MAC_ADDRESS}"
+echo "Host data: ${HOST_DATA_PATH} -> /mnt/DATA"
 
 # Build port args
 PORT_ARGS=()
@@ -63,39 +74,38 @@ sudo podman run -d --rm \
     --tmpfs /dev/input:rw,dev,nosuid,size=1m \
     -v /sys:/sys:ro \
     -v "${NAME}-home:/home/gamer/" \
-    -v /var/mnt/DATA/:/mnt/DATA/:z \
+    -v "${HOST_DATA_PATH}:/mnt/DATA:rw,rslave" \
     -e "CONTAINER_ID=${NAME}" \
+    -e "SUNSHINE_MAC_ADDRESS=${SUNSHINE_MAC_ADDRESS}" \
     -e SCREEN_WIDTH="${SCREEN_WIDTH:-1920}" \
     -e SCREEN_HEIGHT="${SCREEN_HEIGHT:-1080}" \
     "${PORT_ARGS[@]}" \
     --security-opt label=disable \
-    gamehub-container:latest
+    "${IMAGE}"
 
-# Advertise via mDNS so Moonlight discovers this instance immediately.
-# Sunshine inside the container can't do this itself (no avahi libraries,
-# and in bridge mode multicast doesn't cross the network namespace anyway).
-# Wait for Sunshine to be listening before publishing — otherwise Moonlight
-# discovers the service, gets connection-refused, and retries on a slow interval.
+# Advertise via mDNS so Moonlight discovers this instance like native Sunshine.
+# Sunshine registers _nvstream._tcp with the HTTP port and no TXT records.
 MDNS_PORT="${PORT:-47989}"
-(
-    echo "Waiting for Sunshine to listen on port ${MDNS_PORT}..."
-    for i in $(seq 1 60); do
-        if ss -tlnH "sport = :${MDNS_PORT}" | grep -q .; then
-            echo "Sunshine ready — publishing mDNS: ${NAME}/_nvstream._tcp:${MDNS_PORT}"
-            exec avahi-publish-service "${NAME}" _nvstream._tcp "${MDNS_PORT}"
-        fi
-        sleep 1
-    done
-    echo "WARNING: Sunshine did not start within 60s, publishing mDNS anyway"
-    exec avahi-publish-service "${NAME}" _nvstream._tcp "${MDNS_PORT}"
-) &
-AVAHI_PID=$!
+MDNS_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scripts/gamehub-mdns-publisher.sh"
+start_mdns_publisher() {
+    if ! command -v avahi-publish-service >/dev/null 2>&1; then
+        echo "WARNING: avahi-publish-service not found; Moonlight auto-discovery will not be advertised"
+        return
+    fi
 
-# Auto-cleanup mDNS advertisement when the container stops
-(sudo podman wait "${NAME}" >/dev/null 2>&1; kill "${AVAHI_PID}" 2>/dev/null) &
+    if [[ ! -x "${MDNS_SCRIPT}" ]]; then
+        echo "WARNING: mDNS helper is not executable: ${MDNS_SCRIPT}"
+        return
+    fi
 
-cleanup() { kill "${AVAHI_PID}" 2>/dev/null; }
-trap cleanup EXIT
+    pkill -f "${MDNS_SCRIPT} ${NAME} ${MDNS_PORT}" >/dev/null 2>&1 || true
+    nohup "${MDNS_SCRIPT}" "${NAME}" "${MDNS_PORT}" \
+        >"/tmp/gamehub-mdns-${NAME}.log" 2>&1 &
+    echo "mDNS publisher started: ${NAME}/_nvstream._tcp:${MDNS_PORT}"
+    echo "mDNS logs: /tmp/gamehub-mdns-${NAME}.log"
+}
+
+start_mdns_publisher
 
 echo "${NAME} started (mDNS: ${NAME}/_nvstream._tcp:${MDNS_PORT})"
 echo "Logs: sudo podman exec -u gamer ${NAME} bash -c 'XDG_RUNTIME_DIR=/run/user/1000 journalctl --user -f'"
