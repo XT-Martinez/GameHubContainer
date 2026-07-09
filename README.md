@@ -163,9 +163,11 @@ sudo udevadm trigger
   - `ID_SEAT="seat9"` — assigns to a non-existent seat, hiding from systemd-logind
   - `LIBINPUT_IGNORE_DEVICE="1"` — libinput (and desktop compositors) ignores them
 
+**Coexistence with host Sunshine**: Safe to install alongside stock host rules such as `60-sunshine.rules` / `60-sunshine-ublue.rules`. Host Sunshine pads keep their normal names (`Sunshine X-Box One…`, `Sunshine PS5…`) and are not matched. Container UHID pads are renamed to `Container Sunshine…`, so host rules that match exact Sunshine names leave host gamepads alone. The only overlap is that this rule opens `/dev/uinput` and `/dev/uhid` to `0666` (host Sunshine still works; access is slightly broader than stock `0660`).
+
 #### 2. Add your user to the `input` group
 
-Required for `/dev/uinput` access (even in rootless containers):
+Required for `/dev/uinput` access in **rootless** containers (and for native host Sunshine as your user). **Not required** for rootful `./run.sh` / `sudo podman run` — root passes the devices in.
 
 ```bash
 sudo usermod -aG input $USER
@@ -200,6 +202,8 @@ Subsequent builds are faster due to Docker layer caching.
 
 ### Single instance
 
+Prefer `./run.sh` (or `./run.sh 1 57989` for a custom port range). Manual equivalent:
+
 ```bash
 # Check your hidraw major number: grep hidraw /proc/devices (commonly 241-243)
 HIDRAW_MAJOR=$(grep hidraw /proc/devices | awk '{print $1}')
@@ -228,6 +232,8 @@ sudo podman run -d \
     --security-opt label=disable \
     gamehub-container:latest
 ```
+
+**Host data volume**: Mount shared storage only at a non-Steam path such as `/mnt/DATA`. Do **not** bind-mount under `/run/media/deck/...` (or `/run/media/<user>/...`). SteamOS/Steam treat that path as removable/external storage and will show the volume as an external drive. To use a Steam library on the host disk, mount at `/mnt/DATA` and add e.g. `/mnt/DATA/SteamLibrary` manually in Steam (via `libraryfolders.vdf`), not via the external-drive UI.
 
 ### Multiple instances
 
@@ -308,6 +314,29 @@ podman compose logs -f
 4. For multi-instance setups: set `SUNSHINE_PORT` env var to match the external port mapping (or set `port` in the Sunshine web UI under Configuration > Network)
 5. Pair with Moonlight on your client device
 
+**Remote Web UI / CSRF**: Opening the UI from a non-localhost origin (e.g. `https://192.168.x.x:57990`) can be blocked by CSRF protection. Add that exact origin to Sunshine config and restart Sunshine only:
+
+```bash
+# In ~/.config/sunshine/sunshine.conf inside the container
+csrf_allowed_origins = https://192.168.x.x:57990
+
+# Restart Sunshine without restarting the container
+sudo podman exec -u gamer <container> bash -c \
+  'XDG_RUNTIME_DIR=/run/user/1000 systemctl --user restart sunshine.service'
+```
+
+### Gamepad type and Steam Input
+
+Sunshine creates one virtual pad via Inputtino (Xbox One uinput, Switch, or DualSense UHID). Steam Deck UI often enables **Steam Input**, which then creates a second pad (typically `Microsoft X-Box 360 pad` with Valve VID `28de`). That second pad is intentional — Steam remaps the real device so games see a stable Xbox layout while Steam keeps gyro, touchpad, and per-game configs on the source pad.
+
+| Goal | Recommendation |
+|------|----------------|
+| Gyro / DualSense features | Keep DS5: `gamepad = ds5`, or leave auto with client motion sensors (`motion_as_ds4`) |
+| Avoid dual-layout confusion | Per-game Steam Input **Forced On** (use Steam's X360 pad) or **Forced Off** (raw Sunshine pad only) |
+| Xbox-only, no motion | `gamepad = xone` and disable `motion_as_ds4` / `touchpad_as_ds4` so auto never picks DS5 |
+
+Deck UI can look correct while a game has inverted/wrong face buttons if the game binds the **wrong** pad (or both). Check with `cat /proc/bus/input/devices` while streaming for both `Sunshine`/`Container Sunshine` and Steam/`X-Box 360` devices.
+
 ## Rootful vs Rootless Podman
 
 **Rootful podman (`sudo podman run`) is recommended** for multi-instance setups. The input isolation system requires `mknod` to create device nodes in the container's private `/dev/input/` tmpfs, and the Linux kernel blocks `mknod` for character devices in user namespaces — even with `--privileged`.
@@ -327,7 +356,9 @@ podman compose logs -f
 
 ### Rootless single-instance workaround
 
-For a single instance without input isolation, you can run rootless with `--privileged` and WITHOUT the `/dev/input/` tmpfs. All host input devices will be visible inside the container, but the udev rule prevents the host from consuming container-created devices:
+True private `/dev/input` isolation still needs rootful podman (`mknod` of character devices is blocked in user namespaces). Rootless can still *use* virtual pads by bind-mounting host `/dev/input` and allowing the input/hidraw majors via `--device-cgroup-rule` — but then host devices are visible and multi-instance isolation is gone.
+
+For a single instance without isolation, run rootless with `--privileged` and WITHOUT the `/dev/input/` tmpfs. All host input devices will be visible inside the container, but the udev rule prevents the host from consuming container-created devices:
 
 ```bash
 podman run -d \
@@ -423,12 +454,14 @@ Host udev:   ATTRS{phys}=="container-*" OR ATTRS{name}=="Container *" →
 
 ## Known Limitations
 
-- **Rootless podman + input isolation**: The kernel blocks `mknod` for character devices in user namespaces. The `input-mknod-daemon` cannot create `/dev/input/` device nodes in rootless mode. Use rootful podman (`sudo podman run`) for multi-instance input isolation.
+- **Rootless podman + input isolation**: The kernel blocks `mknod` for character devices in user namespaces. The `input-mknod-daemon` cannot create `/dev/input/` device nodes in rootless mode. Use rootful podman (`sudo podman run`) for multi-instance input isolation. Rootless can still see virtual pads only by mounting host `/dev/input` (no isolation).
 - **HDR in games**: HDR is enabled at the compositor level via `GAMESCOPE_DISPLAY_SUPPORTS_HDR`, but games detect HDR through the patched EDID file (`GAMESCOPE_PATCHED_EDID_FILE`) and the `DXVK_HDR` environment variable. Both must be present in gamescope's environment — the container-env.conf systemd drop-in and environment.d/container.conf handle this.
 - **Port mapping and pairing**: Sunshine's internal ports must match external ports for Moonlight pairing to work. Use 1:1 port mapping (e.g., `-p 57989:57989`) and set `port = <HTTPS_PORT>` in sunshine.conf. NAT-style mapping (e.g., `57989:47989`) causes "certificate mismatch" errors during pairing.
+- **CSRF on remote Web UI**: Non-localhost origins need `csrf_allowed_origins` in `sunshine.conf` (see First run). `origin_web_ui_allowed = wan` alone is not enough for CSRF.
 - **Steam startup**: Steam in SteamOS mode may restart once during initial setup (~1-2 min). SteamOS compatibility stubs are included to prevent extended crash loops, but the first session restart is normal.
+- **Host DATA as external drive**: Bind-mounting host storage under `/run/media/deck/...` makes SteamOS treat it as removable storage. Prefer `/mnt/DATA` only (see Running).
 - **Gamepad/hidraw hotplug**: The mknod daemon creates fake udev DB entries and sends synthetic netlink events (MurmurHash2 subsystem filter + `USEC_INITIALIZED`) for SDL/Steam gamepad discovery. Requires `CAP_NET_ADMIN` for the netlink socket.
-- **DualSense (DS5) detection**: DS5 mode requires the Moonlight client to advertise motion controls or manual `gamepad = ds5` in sunshine.conf. The `hid-playstation` kernel module must be loaded on the host. DS5 uses UHID (not uinput), and the kernel doesn't propagate UHID phys to child sysfs attributes — the shim works around this by recording UHID device names to a claim file and prefixing names with "Container" for host-side isolation.
+- **DualSense (DS5) + Steam Input dual pads**: DS5 is auto-selected when the client reports motion (`motion_as_ds4`) or touchpad (`touchpad_as_ds4`), or with `gamepad = ds5`. Requires `hid-playstation` on the host. UHID phys is not propagated to child sysfs nodes — the shim uses a claim file and `Container ` name prefix. Steam Input often creates a second Xbox 360 virtual pad on top; Deck UI uses Steam's pad, while some games bind the raw DS5 (or both), which can look like inverted face buttons. Use per-game Steam Input Forced On/Off, or force `gamepad = xone` if gyro is not needed (see Gamepad type and Steam Input).
 - **tmpfs /dev/input/ requires `dev` flag**: The `--tmpfs /dev/input:rw,dev,...` mount must include `dev` explicitly. Without it, podman defaults to `nodev` which blocks all character device access on the tmpfs, even with correct file permissions.
 - **dup()/dup2() tracking**: If a process duplicates a uinput file descriptor, the shim loses tracking of the new fd. The mknod daemon still picks up the device via polling, but the `phys` field won't be tagged. This is uncommon in practice.
 - **Networking for multiple instances**: With `--network=host`, all instances share the host network. For multiple instances, use `SUNSHINE_PORT` env var and bridge networking with explicit 1:1 port mapping.
