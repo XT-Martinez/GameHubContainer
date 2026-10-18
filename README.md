@@ -187,15 +187,23 @@ Root is refused as the target. Re-run the script after changing users or after p
 This rule does three things:
 1. Prevents the host desktop from consuming virtual input devices created by containers
 2. Sets `/dev/uinput` and `/dev/uhid` to world-writable (needed for container access)
-3. Hands container-tagged devices to your host user, so they are visible inside the rootless container
+3. Keeps container-tagged devices `root:root 0600` at their public path, then the hide helper moves them out of reach and hands them to your host user, so they are visible inside the rootless container
 
 **What this does**:
 - `/dev/uinput` and `/dev/uhid` set to `MODE="0666"` — allows the container's non-root user to create virtual input devices
 - Container-tagged input devices (`phys` matching `container-*`) and UHID devices (name matching `Container *`) get:
-  - `OWNER`/`GROUP` set to your host user and its primary group. This is required for rootless: `--userns=keep-id:uid=1000,gid=1000` maps only that host user into the container, so any other owner would show up as `nobody` and be unusable. Keep `MODE` at `0600` so only that user and root can open them.
+  - `OWNER`/`GROUP` are not set by the rule itself: the node stays `root:root` at its public path so a same-user program cannot open it during the window before it is moved. The hide helper then `chown`s it to your host user and its primary group. This is required for rootless: `--userns=keep-id:uid=1000,gid=1000` maps only that host user into the container, so any other owner would show up as `nobody` and be unusable. `MODE` stays `0600`, so only that user and root can open them.
   - `MODE="0600"` — strips group-read permission, which makes HHD (Handheld Daemon) skip them (critical for SteamOS/Bazzite hosts where seat-based filtering alone is insufficient)
   - `ID_SEAT="seat9"` — assigns to a non-existent seat, hiding from systemd-logind
   - `LIBINPUT_IGNORE_DEVICE="1"` — libinput (and desktop compositors) ignores them
+
+**Hidden node path**: The install script also installs `/usr/local/libexec/gamehub-hide-input-node`, which udev runs for each container-tagged node (`event*`, `js*`, `hidraw*`). It first moves the node from its normal path to `/dev/gamehub-input/<kernel-name>`, and only then `chown`s it to your host user (`0600`). The ordering matters: Flatpak Steam's SDL watches `/dev/input` with inotify and could open the node in the gap between udev's `chown` and the move, so the node is root-only at its public path until it is hidden. The directory is owned by the container root's host subuid (the start of your `/etc/subuid` range) with mode `0700`. Same-user host programs such as Steam or SDL games then get `ENOENT` or `EACCES` instead of the device. The in-container daemon checks `HOST_DEV_DIR/gamehub-input/` first and falls back to the normal path. This only prevents accidental pickup; `podman unshare` or `/proc/<pid>/root` still reach the nodes for a process running as your user.
+
+**uhid (DualSense emulation)**: `/dev/uhid` must be usable by the rootless container. If it is `root 0600` (the `uhid` module is not loaded), run:
+
+```bash
+sudo modprobe uhid && echo uhid | sudo tee /etc/modules-load.d/uhid.conf && sudo udevadm trigger --action=add --sysname-match=uhid
+```
 
 **Coexistence with host Sunshine**: Safe to install alongside stock host rules such as `60-sunshine.rules` / `60-sunshine-ublue.rules`. Host Sunshine pads keep their normal names (`Sunshine X-Box One…`, `Sunshine PS5…`) and are not matched. Container UHID pads are renamed to `Container Sunshine…`, so host rules that match exact Sunshine names leave host gamepads alone. The only overlap is that this rule opens `/dev/uinput` and `/dev/uhid` to `0666` (host Sunshine still works; access is slightly broader than stock `0660`).
 
@@ -207,7 +215,15 @@ Being in the host `input` group is harmless by itself: rootless podman drops sup
 
 The only thing to avoid is `--group-add keep-groups` (or any other way of passing host groups into the container). That would expose the host `input` group to the container and, with it, host keyboards through the hidden host `/dev` bind.
 
-#### 3. GPU access
+#### 3. Verify input isolation
+
+```bash
+python3 -I scripts/test-host-input-isolation.py [seconds]
+```
+
+Run it as your normal user, not with sudo; it needs write access to `/dev/uinput`. It creates a tagged and an untagged virtual keyboard, mouse, touchscreen and gamepad, then checks that host libinput (seat0) and SDL3 ignore the tagged devices and see the untagged ones. It exits 0 on PASS and 1 on FAIL. After changing the udev rules, rerun `scripts/install-host-udev-rules.sh` before the test.
+
+#### 4. GPU access
 
 Your user needs access to `/dev/dri/` devices (typically via the `video` and `render` groups):
 

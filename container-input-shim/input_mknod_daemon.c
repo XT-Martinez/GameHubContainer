@@ -21,10 +21,15 @@
  *     nodev.  Instead, the host /dev is bind-mounted read-only at
  *     HOST_DEV_DIR, and each node is an empty placeholder file that is
  *     mount --bind'ed over the host node (e.g. /dev/input/event5 <-
- *     /run/gamehub-host/dev/input/event5).  Host udev sets the owner asynchronously,
- *     so creation is deferred until the host node is owned by GAMER_UID
- *     (up to DEFER_MAX polls, then proceeds with a warning).  Removal
- *     unmounts the placeholder before unlinking it.
+ *     /run/gamehub-host/dev/input/event5).  The host node is looked up at
+ *     HOST_DEV_DIR/gamehub-input/<kernel-name> first (host udev moves
+ *     container-tagged nodes there), then at its original location
+ *     (HOST_DEV_DIR/input/event5, or HOST_DEV_DIR/hidraw3 for hidraw) as a
+ *     fallback.  Host udev sets the owner asynchronously, so creation is
+ *     deferred until the chosen host node is owned by GAMER_UID (up to
+ *     DEFER_MAX polls, then proceeds with a warning).  Removal unmounts the
+ *     placeholder before unlinking it.  A bind mount pins the inode, so a
+ *     later host-side rename does not affect a node that is already bound.
  *
  *   Mknod mode (rootful, or HOST_DEV_DIR absent): plain mknod(2) of the
  *     char device.  If a bind in bind mode fails, the daemon falls back to
@@ -78,6 +83,7 @@
 
 /* Bind mode: host /dev bind point and default owner (see header comment) */
 #define HOST_DEV_DEFAULT  "/run/gamehub-host/dev"
+#define HOST_HIDDEN_DIR   "gamehub-input"   /* under HOST_DEV_DIR: host-moved nodes */
 #define GAMER_UID_DEFAULT 1000
 
 /* How long to wait for sysfs to populate */
@@ -759,31 +765,61 @@ static void defer_prune(int hidraw) {
     }
 }
 
+/* Does host_path name a char device with rdev maj:min? */
+static int host_node_match(const char *host_path, unsigned int maj, unsigned int min) {
+    struct stat st;
+    return stat(host_path, &st) == 0 && S_ISCHR(st.st_mode) &&
+           st.st_rdev == makedev(maj, min);
+}
+
 /*
- * Host node path for a hostrel such as "input/event5" or "hidraw3".
- * Returns 0 on success, -1 if the path would not fit in outsz.
+ * Host node path for container device devname (maj:min).  Candidates, in
+ * lookup order:
+ *   HOST_DEV_DIR/gamehub-input/<devname>   (host udev moved the node here)
+ *   HOST_DEV_DIR/input/<devname>           (original location, input family)
+ *   HOST_DEV_DIR/<devname>                 (original location, hidraw family)
+ * Returns 1 if a candidate is a char device with rdev maj:min (out is that
+ * candidate).  Returns 0 if none matched: out is then the original location,
+ * so the ownership check and mknod fallback behave as before.  Returns -1 if
+ * a path would not fit in outsz.
  */
-static int host_node_path(char *out, size_t outsz, const char *hostrel) {
-    size_t dl = strlen(host_dev_dir), rl = strlen(hostrel);
-    if (dl + 1 + rl >= outsz)
+static int host_node_path(const char *devname, int hidraw,
+                          unsigned int maj, unsigned int min,
+                          char *out, size_t outsz) {
+    char hidden[PATH_MAX], orig[PATH_MAX];
+    int hn = snprintf(hidden, sizeof(hidden), "%s/" HOST_HIDDEN_DIR "/%s",
+                      host_dev_dir, devname);
+    int on;
+    if (hidraw)
+        on = snprintf(orig, sizeof(orig), "%s/%s", host_dev_dir, devname);
+    else
+        on = snprintf(orig, sizeof(orig), "%s/input/%s", host_dev_dir, devname);
+    if (hn < 0 || hn >= (int)sizeof(hidden) || on < 0 || on >= (int)sizeof(orig))
         return -1;
-    memcpy(out, host_dev_dir, dl);
-    out[dl] = '/';
-    memcpy(out + dl + 1, hostrel, rl + 1);   /* includes the NUL */
-    return 0;
+
+    if (host_node_match(hidden, maj, min)) {
+        if (snprintf(out, outsz, "%s", hidden) >= (int)outsz)
+            return -1;
+        return 1;
+    }
+    if (snprintf(out, outsz, "%s", orig) >= (int)outsz)
+        return -1;
+    return host_node_match(orig, maj, min);
 }
 
 /*
  * Bind mode only: returns 1 if creation should wait for a later poll because
- * the host node is not yet owned by gamer_uid.  After DEFER_MAX deferrals the
- * node is created anyway with a warning.  Always returns 0 in mknod mode.
+ * the chosen host node is not yet owned by gamer_uid.  After DEFER_MAX
+ * deferrals the node is created anyway with a warning.  Always returns 0 in
+ * mknod mode.
  */
-static int should_defer_node(const char *devname, const char *hostrel, int hidraw) {
+static int should_defer_node(const char *devname, int hidraw,
+                             unsigned int maj, unsigned int min) {
     if (!bind_mode)
         return 0;
 
     char hostpath[PATH_MAX];
-    if (host_node_path(hostpath, sizeof(hostpath), hostrel) != 0)
+    if (host_node_path(devname, hidraw, maj, min, hostpath, sizeof(hostpath)) < 0)
         return 0;   /* cannot form the path; place_node falls back to mknod */
     struct stat st;
     int ready = (stat(hostpath, &st) == 0 && st.st_uid == gamer_uid);
@@ -818,22 +854,20 @@ static int should_defer_node(const char *devname, const char *hostrel, int hidra
 }
 
 /*
- * Place a node at nodepath for host device maj:min (host node at hostrel
- * under host_dev_dir).  Bind mode: create an empty placeholder and bind-mount
- * the host node over it, after verifying the host node is a char device with
- * the expected rdev.  On bind failure the placeholder is removed and mknod is
- * tried.  Returns 0 on success, -1 on failure.
+ * Place a node at nodepath for host device devname (maj:min).  Bind mode:
+ * create an empty placeholder and bind-mount the host node over it, where the
+ * host node is chosen by host_node_path (hidden dir first, then the original
+ * location) and must be a char device with the expected rdev.  On bind failure
+ * the placeholder is removed and mknod is tried.  Returns 0 on success, -1 on
+ * failure.
  */
-static int place_node(const char *nodepath, const char *hostrel,
+static int place_node(const char *nodepath, const char *devname, int hidraw,
                       unsigned int maj, unsigned int min) {
     if (bind_mode) {
         char hostpath[PATH_MAX];
-        struct stat st;
-        if (host_node_path(hostpath, sizeof(hostpath), hostrel) != 0 ||
-            stat(hostpath, &st) != 0 || !S_ISCHR(st.st_mode) ||
-            st.st_rdev != makedev(maj, min)) {
-            DBG("host node %s missing or not char %u:%u, using mknod",
-                hostpath, maj, min);
+        if (host_node_path(devname, hidraw, maj, min, hostpath, sizeof(hostpath)) != 1) {
+            DBG("host node for %s missing or not char %u:%u, using mknod",
+                devname, maj, min);
         } else {
             int fd = open(nodepath, O_CREAT | O_WRONLY | O_CLOEXEC, 0644);
             if (fd < 0) {
@@ -878,9 +912,7 @@ static void create_input_node(const char *devname) {
         return;
     }
 
-    char hostrel[PATH_MAX];
-    snprintf(hostrel, sizeof(hostrel), "input/%s", devname);
-    if (should_defer_node(devname, hostrel, 0))
+    if (should_defer_node(devname, 0, maj, min))
         return;
 
     /* Ensure /dev/input/ exists */
@@ -892,7 +924,7 @@ static void create_input_node(const char *devname) {
     /* Remove stale node or placeholder if present */
     drop_node(nodepath);
 
-    if (place_node(nodepath, hostrel, maj, min) != 0)
+    if (place_node(nodepath, devname, 0, maj, min) != 0)
         return;
 
     /* Classify device type for udev DB */
@@ -949,8 +981,7 @@ static void create_hidraw_node(const char *devname) {
         return;
     }
 
-    const char *hostrel = devname;   /* host node is /dev/<devname> */
-    if (should_defer_node(devname, hostrel, 1))
+    if (should_defer_node(devname, 1, maj, min))
         return;
 
     char nodepath[PATH_MAX];
@@ -959,7 +990,7 @@ static void create_hidraw_node(const char *devname) {
     /* Remove stale node or placeholder if present */
     drop_node(nodepath);
 
-    if (place_node(nodepath, hostrel, maj, min) != 0)
+    if (place_node(nodepath, devname, 1, maj, min) != 0)
         return;
 
     /* Write udev DB for hidraw */

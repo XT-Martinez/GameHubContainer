@@ -22,13 +22,27 @@ isolation, submodules rebased onto upstream).
   mappings on it (`src/wlserver.cpp`), and the variable reaches `gamescope-wl`
   via `/run/container.env`. Not yet tested by pressing the keys.
 - Old untracked `wolf/`, `Sunshine-upstream-gamescope/` and `.vscode/` are gone.
+- **Host input isolation test** (`scripts/test-host-input-isolation.py`, run as
+  your user). With the current udev rule (2026-10-19): tagged keyboard, mouse
+  and touchscreen are absent from libinput seat0, and the untagged control
+  devices are present, so desktop isolation holds. The tagged gamepad is still
+  visible to host SDL3 and readable: host programs running as the same user
+  can open container nodes. Fix in progress: `gamehub-hide-input-node` (udev
+  helper installed by `scripts/install-host-udev-rules.sh`) moves tagged
+  `event*`/`js*`/`hidraw*` nodes to `/dev/gamehub-input/<name>`, then gives them
+  to the host user. Nodes stay root-only at their public path until hidden, so
+  Flatpak Steam's inotify watcher cannot open them in between. Pending: reinstall
+  the rules, then rerun the test (expect PASS).
 
 ## 1. Host setup: `/dev/uhid`
 
 `/dev/uhid` on the host is still `root 0600` (the `uhid` module was not loaded
 when the udev rule was installed), so DualSense (UHID) emulation will not work.
-Fix: `sudo modprobe uhid && sudo udevadm trigger --subsystem-match=misc`, and
-consider loading `uhid` at boot (`/etc/modules-load.d/uhid.conf`).
+Fix:
+
+```bash
+sudo modprobe uhid && echo uhid | sudo tee /etc/modules-load.d/uhid.conf && sudo udevadm trigger --action=add --sysname-match=uhid
+```
 
 ## 2. Runtime checks still to do
 
@@ -49,8 +63,26 @@ consider loading `uhid` at boot (`/etc/modules-load.d/uhid.conf`).
   cross-talk, not a deliberately malicious container.
 - Sunshine logs "Failed to create client: Daemon not running" (no Avahi in the
   container); harmless, the host-side mDNS publisher advertises instead.
+- Hiding the node paths (`/dev/gamehub-input`) only defends against accidental
+  pickup. A host process running as the user can still reach the nodes via
+  `podman unshare` or `/proc/<pid>/root`.
+- A separate host-uid design (container nodes owned by another host uid) was
+  rejected. Rootless podman cannot do idmapped mounts (crun `mount_setattr`
+  EPERM), so the container would lose write access to the shared `/mnt/DATA`
+  drive.
 
-## 4. Cleanup
+## 4. Rootless RyzenAdj (revisit later)
+
+RyzenAdj needs host `CAP_SYS_ADMIN` (PCI config writes) or `CAP_SYS_RAWIO`
+(`/dev/mem`); namespaced caps do not count, so it currently forces rootful mode.
+Planned approach: a small root systemd service on the host that runs RyzenAdj
+and accepts only a whitelist of clamped requests (e.g. set STAPM/fast/slow
+limits within a min/max) over a Unix socket. Bind the socket into the container
+and ship a `ryzenadj` wrapper that forwards to it. The container never gets raw
+SMU access. (Alternative considered: the out-of-tree `ryzen_smu` module with
+file-permission access; rejected for kernel-rebuild/signing upkeep.)
+
+## 5. Cleanup
 
 - `Sunshine` checkout has untracked leftovers from the old nested-submodule
   layout (`third-party/doxyconfig/`,
