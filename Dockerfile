@@ -63,6 +63,7 @@ RUN meson setup builddir \
     --buildtype=release \
     --force-fallback-for=wlroots,libliftoff,vkroots \
     -Dpipewire=enabled \
+    -Dwlroots:werror=false \
     && ninja -C builddir \
     && DESTDIR=/build/install ninja -C builddir install
 
