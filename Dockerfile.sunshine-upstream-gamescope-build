@@ -1,0 +1,105 @@
+# syntax=docker/dockerfile:1
+
+ARG FEDORA_VERSION=44
+
+FROM fedora:${FEDORA_VERSION} AS base
+
+RUN printf '%s\n' \
+    'fastestmirror=True' \
+    'max_parallel_downloads=10' \
+    'defaultyes=True' >> /etc/dnf/dnf.conf
+
+FROM base AS ffmpeg-builder
+
+RUN --mount=type=cache,dst=/var/cache/libdnf5 \
+    dnf5 -y install \
+    cmake ninja-build make gcc gcc-c++ git which pkgconf-pkg-config \
+    nasm yasm python3 kernel-headers \
+    libdrm-devel wayland-devel libxcb-devel libX11-devel libXrandr-devel
+
+COPY Sunshine/third-party/build-deps/ /build/build-deps/
+WORKDIR /build/build-deps
+
+RUN find /build/build-deps -name .git -prune -exec rm -rf {} +
+
+RUN cmake -B build -G "Unix Makefiles" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX=/build/ffmpeg-out \
+    -DBUILD_ALL=OFF \
+    -DBUILD_FFMPEG=ON \
+    -DBUILD_FFMPEG_AMF=OFF \
+    -DBUILD_FFMPEG_NV_CODEC_HEADERS=OFF \
+    -DBUILD_FFMPEG_SVT_AV1=OFF \
+    -DBUILD_FFMPEG_LIBVA=OFF \
+    -DBUILD_FFMPEG_X264=OFF \
+    -DBUILD_FFMPEG_X265=OFF \
+    -DBUILD_FFMPEG_VULKAN=ON \
+    && cmake --build build \
+    && cmake --install build
+
+FROM base AS sunshine-upstream-gamescope-builder
+
+RUN --mount=type=cache,dst=/var/cache/libdnf5 \
+    dnf5 -y install \
+    cmake gcc gcc-c++ libstdc++-static git wget which \
+    libcap-devel libcurl-devel libdrm-devel libevdev-devel \
+    libnotify-devel libva-devel \
+    libX11-devel libxcb-devel libXcursor-devel libXfixes-devel \
+    libXi-devel libXinerama-devel libXrandr-devel libXtst-devel \
+    openssl-devel glslc pipewire-devel \
+    vulkan-headers vulkan-loader-devel \
+    appstream libappstream-glib \
+    libayatana-appindicator3-devel libgudev \
+    mesa-libGL-devel mesa-libgbm-devel \
+    miniupnpc-devel nodejs-npm \
+    numactl-devel opus-devel pulseaudio-libs-devel \
+    python3-jinja2 python3-setuptools \
+    systemd-devel systemd-udev \
+    wayland-devel wayland-protocols-devel
+
+COPY Sunshine-upstream-gamescope/ /build/sunshine/
+COPY Sunshine/third-party/ /build/sunshine/third-party/
+COPY Sunshine-upstream-gamescope/third-party/gamescope-protocols/ /build/sunshine/third-party/gamescope-protocols/
+WORKDIR /build/sunshine
+
+COPY --from=ffmpeg-builder /build/ffmpeg-out/ffmpeg/ /opt/ffmpeg/
+
+ENV CC=gcc CXX=g++
+
+RUN rm -rf third-party/lizardbyte-common && \
+    git clone https://github.com/LizardByte/lizardbyte-common.git third-party/lizardbyte-common && \
+    git -C third-party/lizardbyte-common checkout 06cd442b808f02f1674f3192a84d25b9a503c482 && \
+    rm -rf third-party/libdisplaydevice && \
+    git clone --recursive https://github.com/LizardByte/libdisplaydevice.git third-party/libdisplaydevice && \
+    git -C third-party/libdisplaydevice checkout 6e9722f89103320c948dc1199066c9e17a69e88a && \
+    git -C third-party/libdisplaydevice submodule update --init --recursive && \
+    rm -rf third-party/moonlight-common-c && \
+    git clone --recursive https://github.com/moonlight-stream/moonlight-common-c.git third-party/moonlight-common-c && \
+    git -C third-party/moonlight-common-c checkout 1f764276e848ae2ec7815ef90d1c1748272e074a && \
+    git -C third-party/moonlight-common-c submodule update --init --recursive && \
+    rm -rf third-party/nanors && \
+    git clone --recursive https://github.com/sleepybishop/nanors.git third-party/nanors && \
+    git -C third-party/nanors checkout c3529fda520f53cd007328ba30b6ad3f89947722 && \
+    git -C third-party/nanors submodule update --init --recursive && \
+    rm -rf third-party/nv-codec-headers && \
+    git clone https://github.com/FFmpeg/nv-codec-headers.git third-party/nv-codec-headers && \
+    git -C third-party/nv-codec-headers checkout 33a9ede8d9914299d9262539c576a15bd0a19621
+
+RUN cmake -B build -G "Unix Makefiles" \
+    -DFFMPEG_PREPARED_BINARIES=/opt/ffmpeg \
+    -DBUILD_DOCS=OFF \
+    -DBUILD_TESTS=OFF \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -DSUNSHINE_ASSETS_DIR=share/sunshine \
+    -DSUNSHINE_EXECUTABLE_PATH=/usr/bin/sunshine \
+    -DSUNSHINE_ENABLE_CUDA=OFF \
+    -DSUNSHINE_ENABLE_DRM=ON \
+    -DSUNSHINE_ENABLE_GAMESCOPE=ON \
+    -DSUNSHINE_ENABLE_KWIN=OFF \
+    -DSUNSHINE_ENABLE_PORTAL=ON \
+    -DSUNSHINE_ENABLE_WAYLAND=ON \
+    -DSUNSHINE_ENABLE_X11=ON \
+    -DSUNSHINE_ENABLE_TRAY=OFF \
+    -DSUNSHINE_BUILD_FLATPAK=OFF \
+    && make -j$(nproc) -C build
