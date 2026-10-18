@@ -17,19 +17,17 @@ mappings are disabled by default is not currently true.
 - Until done, treat the README "Steam Overlay Keyboard Shortcuts" section as
   describing intended behavior.
 
-## 2. Commit and push the submodules
+## 2. Submodule follow-ups
 
-Both submodules have uncommitted work and are not part of the pushed commits.
-
-- `gamescope` (branch `gamescope-ba`): local changes in `src/LibInputHandler.cpp`,
-  `src/wlserver.cpp`, `subprojects/stb.wrap`, `subprojects/wlroots`. The branch is
-  also about 8 commits ahead of `origin/gamescope-ba`. The superproject pointer
-  (`5ac8001`) refers to a commit that may not exist on the remote, so a fresh
-  `--recurse-submodules` clone could fail until it is pushed.
-- `Sunshine` (branch `vulkan-pr-4`): local changes in `src/config.cpp`,
-  `src/config.h`, `src/platform/linux/vulkan_encode.cpp`, `src/video.cpp`, and
-  `third-party/build-deps`.
-- After pushing each submodule, commit the updated pointers in this repo.
+- `gamescope` (branch `gamescope-ba`): DONE. Input fixes (`LibInputHandler.cpp`,
+  `wlserver.cpp`) committed and pushed (`5c46078`), along with the previously
+  unpushed commits; the superproject pointer was bumped to match.
+  Still uncommitted and intentionally left out: `subprojects/stb.wrap` (looks like
+  a local build workaround; the `[wrap-file]` has no source URL/hash),
+  `subprojects/wlroots` (dirty nested submodule), and `build-output/`.
+- `Sunshine` (branch `vulkan-pr-4`): do NOT commit the local changes
+  (`src/config.cpp`, `src/config.h`, `src/platform/linux/vulkan_encode.cpp`,
+  `src/video.cpp`, `third-party/build-deps`); see 2a.
 
 ## 2a. Rebase `Sunshine` onto upstream and drop our Vulkan changes
 
