@@ -13,6 +13,9 @@ HIDRAW_MAJOR=$(grep hidraw /proc/devices | awk '{print $1}')
 SUNSHINE_MAC_ADDRESS="${SUNSHINE_MAC_ADDRESS:-$(printf '%s' "${NAME}" | md5sum | sed 's/^\(..\)\(..\)\(..\)\(..\)\(..\).*$/02:\1:\2:\3:\4:\5/')}"
 HOST_DATA_PATH="${HOST_DATA_PATH:-/var/mnt/DATA}"
 IMAGE="${IMAGE:-gamehub-container:latest}"
+GS_ENABLE_CTRL_12="${GS_ENABLE_CTRL_12:-0}"
+ENABLE_RYZENADJ="${ENABLE_RYZENADJ:-0}"
+RYZENADJ_PCI_CONFIG="${RYZENADJ_PCI_CONFIG:-/sys/bus/pci/devices/0000:00:00.0/config}"
 
 if [[ ! -d "${HOST_DATA_PATH}" ]]; then
     echo "ERROR: HOST_DATA_PATH does not exist: ${HOST_DATA_PATH}" >&2
@@ -24,6 +27,26 @@ echo "Image: ${IMAGE}"
 echo "Resolution: ${SCREEN_WIDTH:-1920}x${SCREEN_HEIGHT:-1080}"
 echo "Sunshine MAC: ${SUNSHINE_MAC_ADDRESS}"
 echo "Host data: ${HOST_DATA_PATH} -> /mnt/DATA"
+echo "Steam Ctrl+1/2 shortcuts: ${GS_ENABLE_CTRL_12}"
+echo "RyzenAdj TDP access: ${ENABLE_RYZENADJ}"
+
+RYZENADJ_ARGS=()
+if [[ "${ENABLE_RYZENADJ}" == "1" ]]; then
+    if [[ ! -e /dev/mem || ! -e "${RYZENADJ_PCI_CONFIG}" ]]; then
+        echo "ERROR: RyzenAdj access requested, but a required host device is missing" >&2
+        echo "  /dev/mem: $(test -e /dev/mem && echo present || echo missing)" >&2
+        echo "  PCI config: ${RYZENADJ_PCI_CONFIG}" >&2
+        exit 1
+    fi
+
+    # RyzenAdj falls back to /dev/mem and the AMD host bridge PCI config.
+    # Keep all other sysfs paths read-only for the container.
+    RYZENADJ_ARGS=(
+        --cap-add SYS_RAWIO
+        --device /dev/mem
+        --mount "type=bind,src=${RYZENADJ_PCI_CONFIG},dst=${RYZENADJ_PCI_CONFIG},rw=true"
+    )
+fi
 
 # Build port args
 PORT_ARGS=()
@@ -73,10 +96,12 @@ sudo podman run -d --rm \
     --device-cgroup-rule="c ${HIDRAW_MAJOR}:* rmw" \
     --tmpfs /dev/input:rw,dev,nosuid,size=1m \
     -v /sys:/sys:ro \
+    "${RYZENADJ_ARGS[@]}" \
     -v "${NAME}-home:/home/gamer/" \
     -v "${HOST_DATA_PATH}:/mnt/DATA:rw,rslave" \
     -e "CONTAINER_ID=${NAME}" \
     -e "SUNSHINE_MAC_ADDRESS=${SUNSHINE_MAC_ADDRESS}" \
+    -e "GS_ENABLE_CTRL_12=${GS_ENABLE_CTRL_12}" \
     -e SCREEN_WIDTH="${SCREEN_WIDTH:-1920}" \
     -e SCREEN_HEIGHT="${SCREEN_HEIGHT:-1080}" \
     "${PORT_ARGS[@]}" \

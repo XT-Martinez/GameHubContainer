@@ -115,6 +115,28 @@ Steam's idle sleep settings work inside the container. When sleep triggers, game
 
 This means you can let Steam sleep normally — just reconnect from Moonlight or move the mouse to wake it up. No need to set sleep to "never".
 
+### Steam Overlay Keyboard Shortcuts
+
+Gamescope maps `Ctrl+1` to the Steam overlay and `Ctrl+2` to the quick-access menu by default. These conflict with some games, so `run.sh` disables the Ctrl mappings by default while preserving the gamepad Home-button behavior and `Super+1` / `Super+2` mappings.
+
+To restore the Ctrl shortcuts for an instance, start it with:
+
+```bash
+GS_ENABLE_CTRL_12=1 ./run.sh 1 57989
+```
+
+### Decky / RyzenAdj TDP Control
+
+SimpleDeckyTDP can use its bundled RyzenAdj binary from inside the container, but RyzenAdj needs hardware-level host access that is intentionally disabled by default. After installing Decky Loader and SimpleDeckyTDP inside the container, launch the instance with:
+
+```bash
+ENABLE_RYZENADJ=1 ./run.sh 1 57989
+```
+
+This grants container root `CAP_SYS_RAWIO`, `/dev/mem`, and read/write access to `/sys/bus/pci/devices/0000:00:00.0/config`; all other `/sys` paths remain read-only. It is only appropriate for a trusted single-user container, because container root can then tune the host APU.
+
+The host must already pass `sudo ryzenadj -i`. If its PCI host-bridge path differs, set `RYZENADJ_PCI_CONFIG` to the path used by host RyzenAdj. Do not run competing host-side and container-side TDP controllers at the same time.
+
 ### Desktop Mode (Switch to Desktop)
 
 The container supports switching from Steam Game Mode to a full desktop environment and back — without restarting gamescope or the streaming session. This mirrors the "Switch to Desktop" feature on SteamOS/Steam Deck.
