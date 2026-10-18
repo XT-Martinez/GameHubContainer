@@ -31,6 +31,24 @@ Both submodules have uncommitted work and are not part of the pushed commits.
   `third-party/build-deps`.
 - After pushing each submodule, commit the updated pointers in this repo.
 
+## 2a. Rebase `Sunshine` onto upstream and drop our Vulkan changes
+
+The Vulkan encoder is now merged upstream (LizardByte/Sunshine), so the
+`vulkan-pr-4` fork changes should be dropped rather than committed.
+
+- Verify the upstream merge contains what we need (`src/platform/linux/vulkan_encode.cpp`,
+  `vk_*` config options) and which release/commit it landed in.
+- Rebase/port only the gamescope scanout capture backend onto upstream `master`
+  (see `SUNSHINE_GAMESCOPE_PORT_HANDOVER.md`; `Dockerfile.sunshine-upstream-gamescope-build`
+  builds it).
+- Do not commit the current dirty `Sunshine` changes. The `vk_csc_offload`
+  (RGB->YCbCr offload) work in `vulkan_encode.cpp`, `video.cpp` and `config.*` is
+  not upstream. Either propose it upstream as a separate PR or drop it.
+- Repoint the `Sunshine` submodule (and `.gitmodules` url/branch) at the rebased
+  branch, then update the README "Custom Sunshine" section.
+- The `gamescope` input fixes (`LibInputHandler.cpp`, `wlserver.cpp`) are
+  independent of this and can still be committed and pushed.
+
 ## 3. Untracked directories
 
 - `wolf/` (clone of `games-on-whales/wolf`) and `Sunshine-upstream-gamescope/`

@@ -36,6 +36,8 @@ Instead of going through PipeWire or requiring DRM access, this Sunshine build c
 - Event-driven capture with per-frame HDR metadata
 - Priority in capture method selection: NvFBC > **Gamescope** > Wayland > KMS > X11
 
+**Planned: rebase onto upstream Sunshine.** The Vulkan encoder this fork carried (`vulkan_encode.cpp`, the `vk_*` options) has since been merged into upstream Sunshine. The plan is to rebase the `Sunshine` submodule onto upstream `master`, keep only the gamescope capture backend on top, and drop the fork's own Vulkan encoder changes. See `SUNSHINE_GAMESCOPE_PORT_HANDOVER.md` and `PENDING_TASKS.md`.
+
 ### Input Isolation (Shim + Daemon)
 
 Container input isolation is handled by two cooperating components:
