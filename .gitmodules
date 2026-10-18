@@ -1,8 +1,8 @@
 [submodule "Sunshine"]
 	path = Sunshine
 	url = https://github.com/XT-Martinez/Sunshine
-	branch = vulkan-pr-4
+	branch = gamescope-capture-upstream
 [submodule "gamescope"]
 	path = gamescope
 	url = https://github.com/XT-Martinez/gamescope
-	branch = gamescope-ba
+	branch = gamescope-ba-rebased
