@@ -1,5 +1,5 @@
 #!/bin/bash
-# Publish a Moonlight/Sunshine mDNS service from the host for a rootful Podman container.
+# Publish a Moonlight/Sunshine mDNS service from the host for a rootless or rootful Podman container.
 
 set -euo pipefail
 
@@ -37,4 +37,10 @@ echo "Publishing mDNS: ${NAME}/_nvstream._tcp:${MDNS_PORT}"
 avahi-publish-service "${NAME}" _nvstream._tcp "${MDNS_PORT}" &
 AVAHI_PID=$!
 
-sudo -n podman wait "${NAME}" >/dev/null 2>&1 || true
+# Keep publishing until the container exits. Rootless containers live in the
+# user's podman store; rootful ones (run.sh ROOTFUL=1) need sudo to wait on.
+if podman container exists "${NAME}" 2>/dev/null; then
+    podman wait "${NAME}" >/dev/null 2>&1 || true
+else
+    sudo -n podman wait "${NAME}" >/dev/null 2>&1 || true
+fi

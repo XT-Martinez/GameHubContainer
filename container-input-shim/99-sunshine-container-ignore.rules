@@ -1,8 +1,21 @@
 # Isolate virtual input devices created inside containers from the host desktop.
 #
+# TEMPLATE: the @GAMEHUB_USER@ and @GAMEHUB_GROUP@ placeholders must be
+# substituted before this file is loaded. Use scripts/install-host-udev-rules.sh,
+# which fills them in with the target host user and that user's primary group
+# and installs the result to /etc/udev/rules.d/. Loading this file unmodified
+# will fail to match or set the wrong owner.
+#
 # The LD_PRELOAD shim (libuinput_shim.so) tags every uinput/UHID device
 # with phys="container-<CONTAINER_ID>".  These rules assign container devices
-# to a non-existent seat (seat9) and remove group-read permission.
+# to a non-existent seat (seat9), remove group-read permission, and hand the
+# nodes to the host user that runs the rootless container.
+#
+# OWNER/GROUP must be the host user (not root, not the input group): in rootless
+# podman with --userns=keep-id:uid=1000,gid=1000 only the host user's uid/gid are
+# mapped into the container's user namespace, so any other owner shows up as
+# nobody:nobody and the container cannot open the device. The rootless container
+# runs as that same user, so 0600 still lets only that user (and root) access it.
 #
 # MODE=0600 is critical: HHD (Handheld Daemon) voluntarily skips devices
 # without group-read (checks st_mode & S_IRGRP), which is the only way to
@@ -12,8 +25,8 @@
 # For UHID devices (DualSense/DS5), the kernel doesn't propagate the phys
 # field to sysfs, so we match by device name instead.
 #
-# Install: sudo cp 99-sunshine-container-ignore.rules /etc/udev/rules.d/
-#          sudo udevadm control --reload-rules && sudo udevadm trigger
+# Install: scripts/install-host-udev-rules.sh [host-user]
+#          (replaces the old manual cp; it substitutes the placeholders below)
 
 # Allow containers to create virtual input devices.
 # In rootless podman, device permissions cannot be changed inside the container
@@ -24,9 +37,10 @@ KERNEL=="uhid", SUBSYSTEM=="misc", MODE="0666"
 
 # ── uinput devices (phys-tagged by our shim) ─────────────────
 # Match event/js nodes via parent phys (ATTRS with S), strip group-read
-# to hide from HHD, and assign to non-existent seat9.
-SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{phys}=="container-*", MODE="0600", ENV{ID_SEAT}="seat9", ENV{LIBINPUT_IGNORE_DEVICE}="1"
-KERNEL=="hidraw*", ATTRS{phys}=="container-*", MODE="0600", ENV{ID_SEAT}="seat9"
+# to hide from HHD, assign to non-existent seat9, and give ownership to the
+# host user so the keep-id rootless container can open them.
+SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{phys}=="container-*", OWNER="@GAMEHUB_USER@", GROUP="@GAMEHUB_GROUP@", MODE="0600", ENV{ID_SEAT}="seat9", ENV{LIBINPUT_IGNORE_DEVICE}="1"
+KERNEL=="hidraw*", ATTRS{phys}=="container-*", OWNER="@GAMEHUB_USER@", GROUP="@GAMEHUB_GROUP@", MODE="0600", ENV{ID_SEAT}="seat9"
 
 # ── UHID devices (kernel doesn't propagate phys, match by name) ──
 # The shim prefixes UHID device names with "Container " so we can
@@ -35,5 +49,7 @@ KERNEL=="hidraw*", ATTRS{phys}=="container-*", MODE="0600", ENV{ID_SEAT}="seat9"
 # For input nodes, ATTRS{name} traverses to the parent inputN device (has name file).
 # For hidraw nodes, the parent HID device has no 'name' sysfs file — only HID_NAME
 # in uevent — so we use PROGRAM to grep the parent's uevent instead.
-SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{name}=="Container *", MODE="0600", ENV{ID_SEAT}="seat9", ENV{LIBINPUT_IGNORE_DEVICE}="1"
-SUBSYSTEM=="hidraw", PROGRAM="/bin/grep -qm1 HID_NAME=Container %S%p/device/uevent", MODE="0600", ENV{ID_SEAT}="seat9", RUN+="/bin/chmod 0600 /dev/%k"
+# The RUN chown repeats the OWNER/GROUP assignment for hidraw nodes in case
+# another rule or the kernel default resets ownership after udev applies it.
+SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{name}=="Container *", OWNER="@GAMEHUB_USER@", GROUP="@GAMEHUB_GROUP@", MODE="0600", ENV{ID_SEAT}="seat9", ENV{LIBINPUT_IGNORE_DEVICE}="1"
+SUBSYSTEM=="hidraw", PROGRAM="/bin/grep -qm1 HID_NAME=Container %S%p/device/uevent", OWNER="@GAMEHUB_USER@", GROUP="@GAMEHUB_GROUP@", MODE="0600", ENV{ID_SEAT}="seat9", RUN+="/bin/chmod 0600 /dev/%k", RUN+="/bin/chown @GAMEHUB_USER@:@GAMEHUB_GROUP@ /dev/%k"

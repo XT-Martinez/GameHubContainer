@@ -1,10 +1,14 @@
 [Unit]
 Description=Input device node daemon (container isolation)
-# Must run as system service (root) because mknod for device nodes
-# requires CAP_MKNOD and rootful container to work
+# Node creation has two modes (see input_mknod_daemon.c):
+#   - mknod mode (rootful): device nodes are created with mknod(), which
+#     needs CAP_MKNOD, so run as system service (root).
+#   - bind mode (rootless, HOST_DEV_DIR exists as a directory): nodes are
+#     bind-mounted from the host /dev instead of created with mknod().
 
 [Service]
 Type=simple
+PassEnvironment=HOST_DEV_DIR GAMER_UID UINPUT_SHIM_DEBUG
 ExecStart=/usr/local/bin/input-mknod-daemon
 Restart=on-failure
 RestartSec=2
