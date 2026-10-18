@@ -26,7 +26,7 @@ Recent scanout fixes keep 90/120fps stable across Moonlight reconnects, expose H
 
 ### Custom Sunshine
 
-A fork of [Sunshine](https://github.com/LizardByte/Sunshine) (self-hosted game streaming server) with a **gamescope scanout capture backend**.
+Upstream [Sunshine](https://github.com/LizardByte/Sunshine) (self-hosted game streaming server) with one addition on top: a **gamescope scanout capture backend** (submodule branch `gamescope-capture-upstream`). Encoding uses upstream's Vulkan encoder (`h264_vulkan`, `hevc_vulkan`, `av1_vulkan`).
 
 Instead of going through PipeWire or requiring DRM access, this Sunshine build connects directly to gamescope's Wayland compositor and uses the `gamescope_scanout` protocol to receive frames. The capture backend maintains a persistent Wayland connection that survives display reinit cycles (HDR toggling, resolution changes), avoiding the ~400ms reconnection penalty, while explicitly unsubscribing when the active display is torn down so idle connections do not keep gamescope repainting.
 
@@ -36,7 +36,7 @@ Instead of going through PipeWire or requiring DRM access, this Sunshine build c
 - Event-driven capture with per-frame HDR metadata
 - Priority in capture method selection: NvFBC > **Gamescope** > Wayland > KMS > X11
 
-**Planned: rebase onto upstream Sunshine.** The Vulkan encoder this fork carried (`vulkan_encode.cpp`, the `vk_*` options) has since been merged into upstream Sunshine. The plan is to rebase the `Sunshine` submodule onto upstream `master`, keep only the gamescope capture backend on top, and drop the fork's own Vulkan encoder changes. See `SUNSHINE_GAMESCOPE_PORT_HANDOVER.md` and `PENDING_TASKS.md`.
+The fork's earlier Vulkan encoder changes were dropped in favor of upstream's. The `gamescope` submodule likewise tracks `gamescope-ba-rebased`, the fork rebased onto upstream ValveSoftware/gamescope. See `PENDING_TASKS.md` for open follow-ups.
 
 ### Input Isolation (Shim + Daemon)
 
