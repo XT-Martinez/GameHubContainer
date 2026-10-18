@@ -1,0 +1,15 @@
+#!/bin/bash
+set -euo pipefail
+
+# Scope the uinput shim to Steam and its descendants so Steam Input virtual
+# controllers get tagged for the container without affecting Xwayland.
+# Keep the dynamic loader token literal so 32-bit and 64-bit Steam children
+# resolve the correct shim variant.
+shim='/usr/$LIB/libuinput_shim.so'
+if [ -n "${LD_PRELOAD:-}" ]; then
+    export LD_PRELOAD="${shim}:${LD_PRELOAD}"
+else
+    export LD_PRELOAD="${shim}"
+fi
+
+exec /usr/bin/steam "$@"

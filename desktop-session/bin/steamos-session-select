@@ -1,0 +1,17 @@
+#!/bin/bash
+set -euo pipefail
+
+session="${1:-gamescope}"
+
+case "${session}" in
+    desktop|plasma|plasma-wayland-persistent|plasma-x11-persistent)
+        exec /usr/local/bin/switch-to-desktop.sh
+        ;;
+    gamescope)
+        exec /usr/local/bin/return-to-steam.sh
+        ;;
+    *)
+        echo "Unsupported session target: ${session}" >&2
+        exit 1
+        ;;
+esac

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Return to Steam
+Comment=Close the nested desktop and reopen Steam Game Mode
+Exec=/usr/local/bin/return-to-steam.sh
+Icon=steam
+Terminal=false
+Type=Application
+Categories=System;
+Keywords=steam;gaming;return;

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Steam Desktop Client
+Comment=Open the desktop Steam client inside the nested labwc session
+Exec=/usr/local/bin/desktop-steam.sh
+Icon=steam
+Terminal=false
+Type=Application
+Categories=Game;
+Keywords=steam;desktop;

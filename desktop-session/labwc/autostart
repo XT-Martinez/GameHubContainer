@@ -1,0 +1,25 @@
+#!/bin/sh
+
+# Match labwc's output to gamescope's *current* resolution.
+# SCREEN_WIDTH/SCREEN_HEIGHT hold the original container defaults, but
+# set-resolution.sh may have changed gamescope's output when a Moonlight
+# client connected (e.g., 2560x1440). Query gamescope directly.
+GS_DISPLAY="${GAMESCOPE_WAYLAND_DISPLAY:-gamescope-0}"
+GS_RES=$(WAYLAND_DISPLAY="$GS_DISPLAY" wlr-randr 2>/dev/null \
+    | grep -oP '\d+x\d+(?= px.*current)' || echo "")
+
+if [ -n "$GS_RES" ]; then
+    W="${GS_RES%x*}"
+    H="${GS_RES#*x}"
+else
+    W="${SCREEN_WIDTH:-1920}"
+    H="${SCREEN_HEIGHT:-1080}"
+fi
+wlr-randr --output WL-1 --custom-mode "${W}x${H}" 2>/dev/null &
+
+swaybg -i /usr/share/gamehub-desktop/assets/wallpaper.svg -m fill &
+
+mako --config /usr/share/gamehub-desktop/mako/config &
+
+waybar -c /usr/share/gamehub-desktop/waybar/config.jsonc \
+       -s /usr/share/gamehub-desktop/waybar/style.css &

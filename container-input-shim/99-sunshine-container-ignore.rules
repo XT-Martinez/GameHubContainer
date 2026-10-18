@@ -32,5 +32,8 @@ KERNEL=="hidraw*", ATTRS{phys}=="container-*", MODE="0600", ENV{ID_SEAT}="seat9"
 # The shim prefixes UHID device names with "Container " so we can
 # distinguish them from identical host Sunshine devices.
 # Child input devices inherit the prefix (e.g., "Container ... Touchpad").
+# For input nodes, ATTRS{name} traverses to the parent inputN device (has name file).
+# For hidraw nodes, the parent HID device has no 'name' sysfs file — only HID_NAME
+# in uevent — so we use PROGRAM to grep the parent's uevent instead.
 SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{name}=="Container *", MODE="0600", ENV{ID_SEAT}="seat9", ENV{LIBINPUT_IGNORE_DEVICE}="1"
-SUBSYSTEM=="hidraw", ATTRS{name}=="Container *", MODE="0600", ENV{ID_SEAT}="seat9"
+SUBSYSTEM=="hidraw", PROGRAM="/bin/grep -qm1 HID_NAME=Container %S%p/device/uevent", MODE="0600", ENV{ID_SEAT}="seat9", RUN+="/bin/chmod 0600 /dev/%k"

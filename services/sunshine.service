@@ -24,6 +24,9 @@ Environment=XDG_SESSION_TYPE=wayland
 # Set explicitly to avoid race with gaming-session.service's set-environment
 Environment=LD_PRELOAD=/usr/lib64/libuinput_shim.so
 
+# Populated by container-env.service
+EnvironmentFile=-/run/container.env
+
 # Populated by wait-for-wayland.sh
 EnvironmentFile=-%t/sunshine-wayland.env
 

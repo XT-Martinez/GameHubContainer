@@ -1,0 +1,130 @@
+<?xml version="1.0"?>
+<labwc_config>
+  <core>
+    <gap>10</gap>
+  </core>
+
+  <placement>
+    <policy>cascade</policy>
+    <cascadeOffset x="28" y="28" />
+  </placement>
+
+  <windowSwitcher preview="yes" outlines="yes">
+    <osd show="yes" style="thumbnail" output="focused" thumbnailLabelFormat="%T" />
+  </windowSwitcher>
+
+  <desktops>
+    <number>4</number>
+    <names>
+      <name>Main</name>
+      <name>Files</name>
+      <name>Web</name>
+      <name>Misc</name>
+    </names>
+    <popupTime>750</popupTime>
+  </desktops>
+
+  <theme>
+    <name>GameHub</name>
+    <cornerRadius>12</cornerRadius>
+    <dropShadows>yes</dropShadows>
+    <dropShadowsOnTiled>no</dropShadowsOnTiled>
+    <maximizedDecoration>titlebar</maximizedDecoration>
+    <titlebar>
+      <layout>icon:iconify,max,close</layout>
+    </titlebar>
+    <font place="ActiveWindow">
+      <name>Sans</name>
+      <size>11</size>
+      <weight>Medium</weight>
+    </font>
+    <font place="InactiveWindow">
+      <name>Sans</name>
+      <size>11</size>
+    </font>
+    <font place="OnScreenDisplay">
+      <name>Sans</name>
+      <size>11</size>
+      <weight>Medium</weight>
+    </font>
+  </theme>
+
+  <keyboard>
+    <default />
+    <repeatRate>30</repeatRate>
+    <repeatDelay>300</repeatDelay>
+
+    <!-- App launcher (toggle) -->
+    <keybind key="W-space">
+      <action name="Execute" command="/usr/local/bin/desktop-launcher.sh" />
+    </keybind>
+
+    <!-- Desktop menu -->
+    <keybind key="W-m">
+      <action name="ShowMenu" menu="root-menu" />
+    </keybind>
+
+    <!-- Terminal with GameHub theme -->
+    <keybind key="W-Return">
+      <action name="Execute" command="/usr/bin/foot --config=/usr/share/gamehub-desktop/foot/foot.ini" />
+    </keybind>
+
+    <!-- File manager -->
+    <keybind key="W-e">
+      <action name="Execute" command="/usr/bin/thunar" />
+    </keybind>
+
+    <!-- Browser -->
+    <keybind key="W-b">
+      <action name="Execute" command="/usr/bin/firefox" />
+    </keybind>
+
+    <!-- Desktop Steam client -->
+    <keybind key="W-s">
+      <action name="Execute" command="/usr/local/bin/desktop-steam.sh" />
+    </keybind>
+
+    <!-- Screenshot: area select to clipboard -->
+    <keybind key="W-S-s">
+      <action name="Execute" command="sh -c 'grim -g &quot;$(slurp)&quot; - | wl-copy'" />
+    </keybind>
+
+    <!-- Screenshot: full screen to clipboard -->
+    <keybind key="Print">
+      <action name="Execute" command="sh -c 'grim - | wl-copy'" />
+    </keybind>
+
+    <!-- Return to Steam game mode -->
+    <keybind key="W-Escape">
+      <action name="Execute" command="/usr/local/bin/return-to-steam.sh" />
+    </keybind>
+  </keyboard>
+
+  <mouse>
+    <default />
+    <context name="Root">
+      <mousebind button="Right" action="Press">
+        <action name="ShowMenu" menu="root-menu" />
+      </mousebind>
+    </context>
+  </mouse>
+
+  <menu id="root-menu" label="GameHub">
+    <item label="Applications">
+      <action name="Execute" command="/usr/local/bin/desktop-launcher.sh" />
+    </item>
+    <item label="Terminal">
+      <action name="Execute" command="/usr/bin/foot --config=/usr/share/gamehub-desktop/foot/foot.ini" />
+    </item>
+    <item label="File Manager">
+      <action name="Execute" command="/usr/bin/thunar" />
+    </item>
+    <item label="Browser">
+      <action name="Execute" command="/usr/bin/firefox" />
+    </item>
+    <separator />
+    <item label="Return to Steam">
+      <action name="Execute" command="/usr/local/bin/return-to-steam.sh" />
+    </item>
+  </menu>
+</labwc_config>

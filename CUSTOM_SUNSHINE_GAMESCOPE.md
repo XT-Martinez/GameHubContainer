@@ -82,7 +82,7 @@ Event-driven Wayland protocol where gamescope exports its composited scanout buf
 Copy also at: `third-party/gamescope-protocols/gamescope-scanout.xml`
 
 ```xml
-<interface name="gamescope_scanout" version="1">
+<interface name="gamescope_scanout" version="2">
   <!-- Enums -->
   <enum name="subscribe_flags" bitfield="true">
     <entry name="prefer_hdr" value="0x1"/>
@@ -95,6 +95,7 @@ Copy also at: `third-party/gamescope-protocols/gamescope-scanout.xml`
   <!-- Client → Server -->
   <request name="destroy" type="destructor"/>
   <request name="subscribe">       <!-- max_fps (0=unlimited), flags -->
+  <request name="unsubscribe">     <!-- stop delivery, keep connection alive -->
   <request name="release_buffer">   <!-- buffer_id -->
 
   <!-- Server → Client -->
@@ -120,7 +121,8 @@ Copy also at: `third-party/gamescope-protocols/gamescope-scanout.xml`
   - `last_focus_commit_id`, `last_override_commit_id` — per-client commit-skip state
   - `force_send_frames` — grace period counter: bypasses commit-skip for N frames after (re)subscribe
 - Added `std::vector<gamescope_scanout_client> gamescope_scanout_clients`
-- Added declaration: `void wlserver_scanout_send_frame( uint64_t ulFocusCommitId, uint64_t ulOverrideCommitId );`
+- Added declaration: `bool wlserver_has_active_gamescope_scanout_client(void);`
+- Added declaration: `void wlserver_scanout_send_frame( uint64_t ulFocusCommitId, uint64_t ulOverrideCommitId, uint32_t uInputCounter );`
 
 **File: `gamescope/src/wlserver.cpp`** (MODIFIED)
 - Added `#include "rendervulkan.hpp"` for `vulkan_get_last_output_image()`, `g_output`, `CVulkanTexture`
@@ -129,18 +131,19 @@ Copy also at: `third-party/gamescope-protocols/gamescope-scanout.xml`
 Protocol handlers:
 - `gamescope_scanout_handle_destroy()` — destroys resource
 - `gamescope_scanout_handle_subscribe(max_fps, flags)` — updates client settings, resets commit tracking (last_focus_commit_id=0, last_override_commit_id=0), clears outstanding buffers, sets force_send_frames=3
+- `gamescope_scanout_handle_unsubscribe()` — marks the resource inactive without destroying the persistent Wayland connection
 - `gamescope_scanout_handle_release_buffer(buffer_id)` — removes from outstanding set
 - `gamescope_scanout_bind()` — creates resource, initializes client struct, sets destructor that removes client from vector
-- `create_gamescope_scanout()` — creates wl_global, called from wlserver_init()
+- `create_gamescope_scanout()` — creates wl_global at protocol version 2, called from wlserver_init()
 
-Main function `wlserver_scanout_send_frame(ulFocusCommitId, ulOverrideCommitId)`:
-1. **Early-out check**: scans clients for any needing a frame (force_send_frames > 0 OR commit ID mismatch)
+Main function `wlserver_scanout_send_frame(ulFocusCommitId, ulOverrideCommitId, uInputCounter)`:
+1. **Early-out check**: scans clients for any needing a frame (force_send_frames > 0 OR commit ID mismatch OR input counter change)
 2. Gets `vulkan_get_last_output_image(false, false)` — returns `outputImages[(nOutImage+2)%3]` (safe to read)
 3. Reads `wlr_dmabuf_attributes` from texture (fds, format, modifier, pitches, offsets)
 4. Gets `CLOCK_MONOTONIC` timestamp
 5. Per-client loop:
    - **Grace period**: if `force_send_frames > 0`, decrement and skip commit-skip
-   - **Per-client commit-skip**: only send if focus/override commits changed for THIS client
+   - **Per-client commit-skip**: only send if focus/override commits or input state changed for THIS client
    - **Rate limiting**: per-client deadline advancement (same algorithm as PipeWire rate limiter)
    - **Outstanding buffer limit**: max 2 unreleased buffers (of 3 triple-buffered)
    - **HDR metadata on change**: reads from `g_output.swapchainHDRMetadata->View<hdr_output_metadata>().hdmi_metadata_type1`
@@ -151,7 +154,7 @@ Main function `wlserver_scanout_send_frame(ulFocusCommitId, ulOverrideCommitId)`
 - Integration hook in `bIsVBlankFromTimer` block, after `paint_pipewire()`:
 ```cpp
 // Scanout export: send frame to subscribed clients
-if ( !wlserver.gamescope_scanout_clients.empty() )
+if ( wlserver_has_active_gamescope_scanout_client() )
 {
     global_focus_t *pScanoutFocus = GetCurrentFocus();
     if ( pScanoutFocus && pScanoutFocus->focusWindow )
@@ -164,6 +167,7 @@ if ( !wlserver.gamescope_scanout_clients.empty() )
     }
 }
 ```
+- Recent refinement: only force repaint on VBlank for scanout when the software cursor is actively moving (recent `ulLastMovedCursorTime`) instead of repainting static scenes for the full duration of a connected stream.
 
 ### Sunshine Client-Side Implementation
 
@@ -185,22 +189,22 @@ Key classes and structures:
 
 `gs::get_connection()` — factory that returns existing connection or creates new one:
 - Connects to `WAYLAND_DISPLAY` env var
-- Binds `gamescope_scanout_interface` from registry
+- Binds `gamescope_scanout_interface` from registry at `min(version, 2)`
 - Sets up protocol listener with `connection_t*` as user data
 - Starts dispatch thread
 
 `gs::display_vram_t` — extends `platf::display_t`:
 - `init()`: Gets/reuses connection, sets `active_display = this`, subscribes with max_fps, waits for first frame (2s timeout), sets dimensions, records initial HDR state
-- `capture()`: Main loop — waits for frame_ready condition variable, checks resolution/HDR changes (returns `capture_e::reinit`), fills `egl::img_descriptor_t` with surface descriptor (fds, pitches, offsets, fourcc, modifier), transfers FD ownership, sends release_buffer
+- `capture()`: Main loop — waits for frame_ready condition variable, swaps the full pending frame under mutex ownership, checks resolution/HDR changes (returns `capture_e::reinit`), fills `egl::img_descriptor_t` with surface descriptor (fds, pitches, offsets, fourcc, modifier), transfers FD ownership, sends release_buffer
 - `alloc_img()`: Creates `egl::img_descriptor_t` with dimensions
 - `make_avcodec_encode_device()`: Factory for VAAPI/Vulkan/CUDA encode devices
 - `is_hdr()`: Returns `hdr_active` (set per-frame from colorspace field)
 - `get_hdr_metadata()`: Returns gamescope metadata if received, else standard BT.2020 fallback primaries
 - `is_event_driven()`: Returns true
-- Destructor: sets `active_display = nullptr`, resets pending frame (does NOT destroy connection)
+- Destructor: sets `active_display = nullptr`, sends `unsubscribe`, resets pending frame (does NOT destroy connection)
 
 Event callbacks (routed through `connection_t::active_display`):
-- `handle_frame()`: Resets pending, fills metadata, sets `hdr_active` from colorspace
+- `handle_frame()`: If an older pending frame has not been consumed yet, releases it first, then resets pending, fills metadata, sets `hdr_active` from colorspace
 - `handle_plane()`: Collects FD + stride + offset per plane
 - `handle_frame_done()`: Sets `frame_ready = true`, notifies condition variable
 - `handle_hdr_metadata()`: Sets `hdr_meta_received = true`, fills `SS_HDR_METADATA` struct
@@ -259,6 +263,12 @@ endif()
 17. **SteamOS OOBE stuck at network screen**: The SteamOS initial setup (OOBE) queries NetworkManager via D-Bus to detect network connectivity. Without NetworkManager, the "Choose your network" screen blocks indefinitely. Fixed by adding NetworkManager and iproute to the container. With `--network=host`, NM sees the host's network interfaces and reports connected, allowing the OOBE to proceed.
 18. **Steam hardwareupdater crash loop**: Steam's `hardwareupdater` Python script crashes with `ImportError: Unable to load libhidapi-hidraw.so`, spamming logs. Fixed by installing the `hidapi` package in the container.
 19. **No HDR in headless mode**: The gamescope headless backend hardcoded `SupportsHDR() = false` and BT.709/Gamma 2.2 colorimetry, preventing HDR passthrough to Moonlight clients. Fixed by making the headless connector check `g_bForceHDR10OutputDebug` (`--hdr-enabled` flag): when set, reports BT.2020/PQ colorimetry, initializes HDRInfo with 1000 nit max CLL / 800 nit FALL, and returns `IsHDRActive() = true`. The scanout export protocol already sends per-frame HDR metadata and colorspace fields, so Sunshine picks up HDR automatically. Enabled by default via `ENABLE_GAMESCOPE_HDR=1` env var (processed by `gamescope-session-plus`).
+20. **HDR not detected inside games**: Compositor-side HDR atoms were present, but games still need the patched EDID file and DXVK HDR environment in the launched session. Fixed by propagating `GAMESCOPE_PATCHED_EDID_FILE`, `DXVK_HDR=1`, and `ENABLE_HDR_WSI=1` into the user-service environment so Steam and games see the same HDR capability that gamescope advertises.
+21. **Moonlight reconnects dropping to ~67fps / 50fps**: Sunshine kept only one pending scanout frame, and reconnect bursts could overwrite it before the capture thread consumed it. That dropped frames without sending `release_buffer`, leaving gamescope thinking old buffers were still in flight and throttling delivery. Fixed by releasing overwritten pending frames immediately and transferring full pending-frame ownership under the capture mutex.
+22. **Persistent scanout connection kept idle GPU busy**: The persistent Wayland connection survived reconnects, but gamescope treated any existing scanout resource as an active consumer and repainted every VBlank even on static scenes. Fixed by adding protocol version 2 `unsubscribe`, tracking active subscribers separately from existing resources, and only forcing repaint during recent visible software-cursor movement.
+23. **Desktop mode: gamescope only composites X11 windows**: Gamescope's `determine_and_apply_focus()` only considers XWayland windows for the global focus. When Steam exits for a desktop-mode switch, no X11 window is focused, so gamescope renders nothing — even though a native Wayland client (labwc) is connected and submitting frames via XDG shell. Fixed by adding an **XDG focus fallback** in `steamcompmgr.cpp`: after the X11 focus pass, if `pFocus->focusWindow` is still null and `g_steamcompmgr_xdg_focus.focusWindow` exists, the XDG window is promoted as the focus for painting and scanout export. This lets labwc (and its entire desktop) render through gamescope and stream to Moonlight.
+24. **Sleep/DPMS unrecoverable in container**: When Steam triggers sleep (idle timeout or user action), gamescope sets `GAMESCOPE_DPMS=1` and attempts `systemctl suspend` via D-Bus, which fails in a container (`sd_bus_call` returns -30). The display goes black and never recovers because there is no physical power button or systemd resume path. Fixed by adding a **wake-on-connect** mechanism: an atomic `g_bDPMSWakeRequest` flag is set when a scanout client subscribes (Moonlight connects), a key is pressed, or the mouse moves. The steamcompmgr main loop checks the flag while DPMS is active, clears `g_bDPMS`, writes `GAMESCOPE_DPMS=0` back to the X11 atom (so Steam also sees the wake), and resumes rendering. This makes reconnecting from Moonlight or sending any input the container equivalent of pressing the power button.
+25. **Desktop mode: gamescope crashes when returning to Steam**: Killing labwc (the nested Wayland compositor) caused gamescope to segfault. Root cause: **listener ordering** on `wlr_surface.events.destroy`. When a Wayland client disconnects, gamescope's `handle_wl_surface_destroy()` fires first and sets `wlr_surface->data = nullptr`. Then `waylandy_surface_destroy()` fires, calls `get_wl_surface_info(info->main_surface)`, gets nullptr (because data was already cleared), and **returned early** — skipping all cleanup. The XDG window was never removed from `xdg_wins`, `info->main_surface` was left as a **dangling pointer** to freed `wlr_surface` memory, and `xdg_dirty` was never set. The steamcompmgr thread then accessed the dangling pointer through the stale XDG focus → crash. Fixed in `wlserver.cpp` by removing the early return (always clean up regardless of wl_surface_info availability), always setting `xdg_dirty = true` in the destroy handler, and guarding `wlserver_surface->xdg_surface = nullptr` with a null check. Additionally, `steamcompmgr_check_xdg()` now clears `g_steamcompmgr_xdg_focus.focusWindow` when dirty to prevent the XDG fallback from promoting a stale window during the gap between dirty detection and focus re-evaluation.
 
 ---
 
@@ -268,11 +278,11 @@ endif()
 
 2. **Per-client commit-skip**: Instead of global commit-skip (which blocked new clients), each client tracks its own commit IDs. New clients always get the first frame. Grace period of 3 frames after subscribe ensures clean frames on static content.
 
-3. **Persistent Wayland connection**: The `connection_t` singleton survives display destruction/recreation. On reinit, only the `active_display` pointer is swapped. This eliminates ~400ms Wayland roundtrip overhead during HDR/resolution changes.
+3. **Persistent Wayland connection**: The `connection_t` singleton survives display destruction/recreation. On reinit, only the `active_display` pointer is swapped. This eliminates ~400ms Wayland roundtrip overhead during HDR/resolution changes, while protocol v2 `unsubscribe` lets idle sessions stop scanout delivery without tearing the connection down.
 
 4. **FD lifetime**: Protocol sends `dup()`'d FDs (Wayland closes sent FDs). Sunshine transfers FD ownership to `img_descriptor_t` (sets `pending.fds[i] = -1` after transfer). `release_buffer` signals gamescope it can reuse the buffer.
 
-5. **Triple-buffer safety**: `vulkan_get_last_output_image(false, false)` returns `outputImages[(nOutImage+2)%3]` — two frames behind the current write, safe to read. Outstanding buffer limit of 2 prevents all 3 buffers from being held by the client.
+5. **Triple-buffer safety**: `vulkan_get_last_output_image(false, false)` returns `outputImages[(nOutImage+2)%3]` — two frames behind the current write, safe to read. Outstanding buffer limit of 2 prevents all 3 buffers from being held by the client, and overwritten pending frames are explicitly released on the Sunshine side so reconnect bursts do not leak slots.
 
 ---
 
@@ -289,13 +299,14 @@ endif()
 | File | Changes |
 |------|---------|
 | `gamescope/protocol/meson.build` | Added gamescope-scanout.xml |
-| `gamescope/src/wlserver.hpp` | Added scanout client struct + function decl |
-| `gamescope/src/wlserver.cpp` | Protocol handlers + send_frame (~200 lines added) |
-| `gamescope/src/steamcompmgr.cpp` | Rate limiter, commit-skip, scanout hook, NoFilter |
-| `gamescope/src/Backends/HeadlessBackend.cpp` | DRM modifiers (LINEAR) for headless output, path-based libinput for container input devices, stale device cleanup for hotplug, HDR10 support via `--hdr-enabled` flag (BT.2020/PQ, 1000 nit CLL) |
+| `gamescope/src/wlserver.hpp` | Added scanout client struct + helpers for active-subscriber tracking, wlr-output-management fields (output_manager, apply/test listeners, pending_output_mode) |
+| `gamescope/src/wlserver.cpp` | Protocol handlers + send_frame (~200 lines added), later extended with `unsubscribe` support and active-subscriber tracking, wlr-output-management protocol (apply/test handlers, wlserver_update_output_manager), initial config broadcast |
+| `gamescope/src/steamcompmgr.cpp` | Rate limiter, commit-skip, scanout hook, NoFilter, update_vrr_atoms call after PollState for refresh/HDR feedback, later refined to force repaint only during recent software-cursor movement |
+| `gamescope/src/Backends/HeadlessBackend.cpp` | DRM modifiers (LINEAR) for headless output, path-based libinput for container input devices, stale device cleanup for hotplug, HDR10 support (always advertised, enabled via `cv_hdr_enabled`), dynamic resolution/refresh via wlr-output-management + PollState, EDID generation, HackTemporarySetDynamicRefresh for Steam frame limit, GetValidDynamicRefreshRates from `--custom-refresh-rates` |
 | `gamescope/src/Backends/DeferredBackend.h` | Marked `CDeferredFb::Unwrap()` as `inline` (fixes ODR violation) |
 | `gamescope/src/pipewire.cpp` | Max framerate atomic + accessor |
 | `gamescope/src/pipewire.hpp` | pipewire_get_max_framerate() declaration |
+| `Sunshine/src/platform/linux/gamescopegrab.cpp` | Persistent scanout backend, later extended to release overwritten pending frames and explicitly unsubscribe persistent clients when idle |
 | `Sunshine/src/platform/linux/misc.cpp` | GAMESCOPE source registration |
 | `Sunshine/src/platform/linux/pipewire_common.h` | maxFramerate SPA negotiation |
 | `Sunshine/cmake/compile_definitions/linux.cmake` | GAMESCOPE build section |

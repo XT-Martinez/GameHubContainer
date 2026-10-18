@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 #
 # Sunshine + Gamescope + Steam container image
-# Fedora 43 base with Valve's patched Mesa/PipeWire from Bazzite COPRs
+# Fedora 44 base with Valve's patched Mesa/PipeWire from Bazzite COPRs
 #
 # Expected build context (repo root with submodules):
 #   gamescope/              - custom gamescope source
@@ -22,7 +22,7 @@
 #     --build-context scripts=sunshine-container/scripts \
 #     -t sunshine-gamescope .
 
-ARG FEDORA_VERSION=43
+ARG FEDORA_VERSION=44
 
 # ============================================================
 # Common base with fast mirrors
@@ -73,7 +73,7 @@ FROM base AS sunshine-builder
 
 RUN --mount=type=cache,dst=/var/cache/libdnf5 \
     dnf5 -y install \
-    cmake gcc14 gcc14-c++ git wget which \
+    cmake gcc gcc-c++ libstdc++-static git wget which \
     libcap-devel libcurl-devel libdrm-devel libevdev-devel \
     libnotify-devel libva-devel \
     libX11-devel libxcb-devel libXcursor-devel libXfixes-devel \
@@ -92,7 +92,7 @@ RUN --mount=type=cache,dst=/var/cache/libdnf5 \
 COPY Sunshine/ /build/sunshine/
 WORKDIR /build/sunshine
 
-ENV CC=gcc-14 CXX=g++-14
+ENV CC=gcc CXX=g++
 
 # Fix NVENC compatibility with newer nv-codec-headers pulled by FetchContent.
 # This is a no-op on AMD but must compile for the runtime detection code path.
@@ -126,7 +126,7 @@ RUN cmake -B build -G "Unix Makefiles" \
 # ============================================================
 FROM base AS shim-builder
 
-RUN dnf5 -y install gcc kernel-headers make systemd-devel
+RUN dnf5 -y install gcc glibc-devel.i686 kernel-headers libatomic libatomic.i686 libgcc.i686 make systemd-devel
 
 COPY container-input-shim/ /build/
 WORKDIR /build
@@ -198,20 +198,30 @@ RUN --mount=type=cache,dst=/var/cache/libdnf5 \
 # ── Gamescope (COPR version for runtime deps, binary overridden later) ──
 RUN --mount=type=cache,dst=/var/cache/libdnf5 \
     dnf5 --enable-repo=terra -y install \
-        gamescope.x86_64 \
-        gamescope-libs.x86_64 \
-        gamescope-shaders
+        gamescope.x86_64
 
 # ── Gamescope session management ──────────────────────────────
 RUN --mount=type=cache,dst=/var/cache/libdnf5 \
+    dnf5 -y install \
+        switcheroo-control \
+        gamescope-session \
+        gamescope-session-steam && \
     mkdir -p /usr/share/gamescope-session-plus/ && \
     curl --retry 3 -Lo /usr/share/gamescope-session-plus/bootstrap_steam.tar.gz \
         https://large-package-sources.nobaraproject.org/bootstrap_steam.tar.gz && \
-    dnf5 -y install switcheroo-control && \
-    dnf5 -y install \
-        --repo copr:copr.fedorainfracloud.org:ublue-os:bazzite \
-        gamescope-session-plus \
-        gamescope-session-steam
+    if [ -d /usr/share/gamescope-session ] && [ ! -e /usr/share/gamescope-session-plus/sessions.d ]; then \
+        ln -s /usr/share/gamescope-session/sessions.d /usr/share/gamescope-session-plus/sessions.d; \
+    fi && \
+    if ! command -v gamescope-session-plus >/dev/null && command -v gamescope-session >/dev/null; then \
+        printf '%s\n' '#!/bin/sh' 'exec gamescope-session "$@"' > /usr/local/bin/gamescope-session-plus && \
+        chmod +x /usr/local/bin/gamescope-session-plus; \
+    fi && \
+    if [ -f /usr/lib/systemd/user/gamescope-session@.service ] && \
+       [ ! -e /etc/systemd/user/gamescope-session-plus@.service ]; then \
+        mkdir -p /etc/systemd/user && \
+        ln -s /usr/lib/systemd/user/gamescope-session@.service \
+            /etc/systemd/user/gamescope-session-plus@.service; \
+    fi
 
 # ── Steam ─────────────────────────────────────────────────────
 # Steam's 32-bit updater binary needs i686 Mesa GL libraries to render its
@@ -235,6 +245,10 @@ RUN --mount=type=cache,dst=/var/cache/libdnf5 \
         xorg-x11-server-Xwayland \
         dbus dbus-x11 \
         xrandr \
+        labwc waybar wofi swaybg mako foot fuzzel \
+        thunar gvfs xfconf tumbler firefox \
+        adwaita-icon-theme papirus-icon-theme \
+        grim slurp wl-clipboard xdg-utils \
         # Input
         libevdev libinput hidapi \
         # Sunshine runtime deps
@@ -259,9 +273,17 @@ RUN --mount=type=cache,dst=/var/cache/libdnf5 \
         glibc-langpack-en pciutils \
         # SDL controller database
         && \
+    # Heroic Games Launcher (Epic/GOG/Amazon)
+    dnf5 -y copr enable atim/heroic-games-launcher && \
+    dnf5 -y install heroic-games-launcher-bin && \
     mkdir -p /usr/share/sdl/ && \
     curl --retry 3 -Lo /usr/share/sdl/gamecontrollerdb.txt \
-        https://raw.githubusercontent.com/mdqinc/SDL_GameControllerDB/refs/heads/master/gamecontrollerdb.txt
+        https://raw.githubusercontent.com/mdqinc/SDL_GameControllerDB/refs/heads/master/gamecontrollerdb.txt && \
+    rm -f \
+        /usr/share/dbus-1/services/fr.emersion.mako.service \
+        /etc/xdg/autostart/mako.desktop \
+        /etc/xdg/autostart/fr.emersion.mako.desktop \
+        /usr/share/applications/fr.emersion.mako.desktop
 
 # ── Overlay custom-built binaries ─────────────────────────────
 
@@ -273,6 +295,7 @@ COPY --from=sunshine-builder /build/install/ /
 
 # uinput isolation shim (phys tagging) + mknod daemon (device node creation)
 COPY --from=shim-builder /build/libuinput_shim.so /usr/lib64/libuinput_shim.so
+COPY --from=shim-builder /build/libuinput_shim32.so /usr/lib/libuinput_shim.so
 COPY --from=shim-builder /build/input-mknod-daemon /usr/local/bin/input-mknod-daemon
 COPY container-input-shim/99-sunshine-container-ignore.rules /etc/udev/rules.d/
 
@@ -307,7 +330,26 @@ RUN useradd -m -u ${GAMER_UID} -G video,render,input gamer && \
 COPY services/gaming-session.service services/sunshine.service \
     /etc/systemd/user/
 COPY scripts/ /usr/local/bin/
-RUN chmod +x /usr/local/bin/*.sh
+COPY desktop-session/bin/ /usr/local/bin/
+COPY desktop-session/labwc/ /usr/share/gamehub-desktop/labwc/
+COPY desktop-session/waybar/ /usr/share/gamehub-desktop/waybar/
+COPY desktop-session/wofi/ /usr/share/gamehub-desktop/wofi/
+COPY desktop-session/mako/ /usr/share/gamehub-desktop/mako/
+COPY desktop-session/foot/ /usr/share/gamehub-desktop/foot/
+COPY desktop-session/fuzzel/ /usr/share/gamehub-desktop/fuzzel/
+COPY desktop-session/assets/ /usr/share/gamehub-desktop/assets/
+COPY desktop-session/themes/GameHub/ /usr/share/themes/GameHub/
+COPY desktop-session/applications/ /usr/share/applications/
+COPY desktop-session/gamescope-session-plus/steam /usr/share/gamehub-desktop/steam.session
+RUN mkdir -p /usr/share/applications/steam && \
+    mkdir -p /etc/gamescope-session-plus/sessions.d && \
+    cp /usr/share/applications/gamehub-switch-to-desktop.desktop \
+       /usr/share/applications/steam/gamehub-switch-to-desktop.desktop && \
+    install -m 0644 /usr/share/gamehub-desktop/steam.session \
+       /etc/gamescope-session-plus/sessions.d/steam && \
+    ln -sf /usr/local/bin/steamos-session-select /usr/bin/steamos-session-select && \
+    ln -sf /usr/local/bin/return-to-gamemode /usr/bin/return-to-gamemode && \
+    chmod +x /usr/local/bin/*.sh /usr/local/bin/steam /usr/local/bin/session-supervisor.sh /usr/local/bin/start-desktop-session.sh /usr/local/bin/desktop-launcher.sh /usr/local/bin/desktop-steam.sh /usr/local/bin/switch-to-desktop.sh /usr/local/bin/return-to-steam.sh /usr/local/bin/steamos-session-select /usr/local/bin/return-to-gamemode /usr/share/gamehub-desktop/labwc/autostart
 
 # Install system services (need real root for mknod/chmod in rootless podman)
 COPY services/device-permissions.service /etc/systemd/system/device-permissions.service
@@ -326,8 +368,11 @@ RUN mkdir -p /etc/systemd/system/multi-user.target.wants && \
 # Default Sunshine config (system location — copied to user dir on first start)
 COPY configs/sunshine.conf /etc/sunshine/sunshine.conf.default
 
-# Add restart drop-in for gamescope-session-plus (vendor unit has no Restart=).
-# Steam may need several restarts to bootstrap on fresh volumes.
+# Add drop-ins for gamescope-session-plus (vendor unit has no Restart= or env).
+# The environment drop-in ensures LIBSEAT_BACKEND=noop and other critical vars
+# are set on the FIRST start, not just after gaming-session.service's set-environment
+# runs (which is a race). Container-specific vars come from /run/container.env
+# (written by container-env.service before user sessions start).
 RUN mkdir -p /etc/systemd/user/gamescope-session-plus@steam.service.d && \
     printf '%s\n' \
         '[Service]' \
@@ -337,7 +382,19 @@ RUN mkdir -p /etc/systemd/user/gamescope-session-plus@steam.service.d && \
         '[Unit]' \
         'StartLimitIntervalSec=300' \
         'StartLimitBurst=10' \
-        > /etc/systemd/user/gamescope-session-plus@steam.service.d/restart.conf
+        > /etc/systemd/user/gamescope-session-plus@steam.service.d/restart.conf && \
+    printf '%s\n' \
+        '[Service]' \
+        'EnvironmentFile=-/run/container.env' \
+        'Environment=LIBSEAT_BACKEND=noop' \
+        'Environment=WLR_BACKENDS=headless' \
+        'Environment=BACKEND=headless' \
+        'Environment=ENABLE_GAMESCOPE_HDR=1' \
+        'Environment=ENABLE_GAMESCOPE_WSI=1' \
+        'Environment=GAMESCOPE_PATCHED_EDID_FILE=/run/user/1000/gamescope-edid.bin' \
+        'Environment=DXVK_HDR=1' \
+        'Environment=ENABLE_HDR_WSI=1' \
+        > /etc/systemd/user/gamescope-session-plus@steam.service.d/container-env.conf
 
 # Enable user services globally
 # sunshine.service must be enabled (is-enabled=enabled) because gamescope-session-plus

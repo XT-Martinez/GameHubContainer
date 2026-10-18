@@ -17,6 +17,7 @@ set -euo pipefail
 
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export HOME="${HOME:-/home/gamer}"
+export PATH="/usr/local/bin:${PATH}"
 
 # Ensure XDG_RUNTIME_DIR exists
 mkdir -p "$XDG_RUNTIME_DIR"
@@ -27,19 +28,58 @@ if [ -f /usr/share/sdl/gamecontrollerdb.txt ]; then
 fi
 
 # Container has no seat/session — force headless backend without libseat.
-# These must be set in the systemd user manager so they propagate to
-# gamescope-session-plus@steam.service (which is started as a separate unit).
+# Export to current shell (for the exec'd gamescope-session-plus below)
+# AND set in the systemd user manager (for services started later, e.g. sunshine).
+export LIBSEAT_BACKEND=noop
+export WLR_BACKENDS=headless
+export BACKEND=headless
+export SCREEN_WIDTH="${SCREEN_WIDTH:-1920}"
+export SCREEN_HEIGHT="${SCREEN_HEIGHT:-1080}"
+export CUSTOM_REFRESH_RATES="${CUSTOM_REFRESH_RATES:-60,90,120}"
+export CONTAINER_ID="${CONTAINER_ID:-default}"
+export ENABLE_GAMESCOPE_HDR="${ENABLE_GAMESCOPE_HDR:-1}"
+export ENABLE_GAMESCOPE_WSI="${ENABLE_GAMESCOPE_WSI:-1}"
+export GAMESCOPE_PATCHED_EDID_FILE="${XDG_RUNTIME_DIR}/gamescope-edid.bin"
+${SUNSHINE_PORT:+export SUNSHINE_PORT=$SUNSHINE_PORT}
+
+# Generate a deterministic MAC address from CONTAINER_ID for Sunshine.
+# Uses locally-administered bit (02:xx:xx:xx:xx:xx) to avoid colliding
+# with real hardware MACs. Containers often lack a real NIC in sysfs,
+# causing Sunshine to return 00:00:00:00:00:00 which breaks Moonlight.
+if [ -z "${SUNSHINE_MAC_ADDRESS:-}" ]; then
+    SUNSHINE_MAC_ADDRESS=$(printf '%s' "$CONTAINER_ID" | md5sum | sed 's/^\(..\)\(..\)\(..\)\(..\)\(..\).*$/02:\1:\2:\3:\4:\5/')
+fi
+export SUNSHINE_MAC_ADDRESS
+
+# Write env vars to environment.d so gamescope-session-plus sources them.
+# gamescope-session-plus reads ~/.config/environment.d/*.conf with set -a,
+# ensuring variables like CUSTOM_REFRESH_RATES reach gamescope.
+mkdir -p "${HOME}/.config/environment.d"
+cat > "${HOME}/.config/environment.d/container.conf" <<ENVEOF
+CUSTOM_REFRESH_RATES=${CUSTOM_REFRESH_RATES}
+ENABLE_GAMESCOPE_HDR=${ENABLE_GAMESCOPE_HDR}
+ENABLE_GAMESCOPE_WSI=${ENABLE_GAMESCOPE_WSI}
+BACKEND=${BACKEND}
+LIBSEAT_BACKEND=${LIBSEAT_BACKEND}
+WLR_BACKENDS=${WLR_BACKENDS}
+GAMESCOPE_PATCHED_EDID_FILE=${GAMESCOPE_PATCHED_EDID_FILE}
+DXVK_HDR=1
+ENABLE_HDR_WSI=1
+ENVEOF
+
 systemctl --user import-environment 2>/dev/null || true
 systemctl --user set-environment \
-    LIBSEAT_BACKEND=noop \
-    WLR_BACKENDS=headless \
-    BACKEND=headless \
-    SCREEN_WIDTH="${SCREEN_WIDTH:-1920}" \
-    SCREEN_HEIGHT="${SCREEN_HEIGHT:-1080}" \
-    CUSTOM_REFRESH_RATES="${CUSTOM_REFRESH_RATES:-60,90,120}" \
-    CONTAINER_ID="${CONTAINER_ID:-default}" \
-    ENABLE_GAMESCOPE_HDR="${ENABLE_GAMESCOPE_HDR:-1}" \
-    ENABLE_GAMESCOPE_WSI="${ENABLE_GAMESCOPE_WSI:-1}" \
+    LIBSEAT_BACKEND="$LIBSEAT_BACKEND" \
+    WLR_BACKENDS="$WLR_BACKENDS" \
+    BACKEND="$BACKEND" \
+    SCREEN_WIDTH="$SCREEN_WIDTH" \
+    SCREEN_HEIGHT="$SCREEN_HEIGHT" \
+    CUSTOM_REFRESH_RATES="$CUSTOM_REFRESH_RATES" \
+    CONTAINER_ID="$CONTAINER_ID" \
+    ENABLE_GAMESCOPE_HDR="$ENABLE_GAMESCOPE_HDR" \
+    ENABLE_GAMESCOPE_WSI="$ENABLE_GAMESCOPE_WSI" \
+    GAMESCOPE_PATCHED_EDID_FILE="$GAMESCOPE_PATCHED_EDID_FILE" \
+    SUNSHINE_MAC_ADDRESS="$SUNSHINE_MAC_ADDRESS" \
     ${SUNSHINE_PORT:+SUNSHINE_PORT=$SUNSHINE_PORT}
 
 exec gamescope-session-plus steam

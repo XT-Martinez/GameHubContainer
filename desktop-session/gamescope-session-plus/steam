@@ -1,0 +1,12 @@
+#!/usr/bin/bash
+
+if [ -r /usr/share/gamescope-session-plus/sessions.d/steam ]; then
+    . /usr/share/gamescope-session-plus/sessions.d/steam
+elif [ -r /usr/share/gamescope-session/sessions.d/steam ]; then
+    . /usr/share/gamescope-session/sessions.d/steam
+else
+    echo "No vendor Steam gamescope session found" >&2
+    exit 1
+fi
+
+export CLIENTCMD="/usr/local/bin/session-supervisor.sh"

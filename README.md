@@ -17,22 +17,26 @@ A fork of [gamescope](https://github.com/ValveSoftware/gamescope) (Valve's micro
 
 Standard Sunshine capture on Wayland uses PipeWire, which forces gamescope to re-composite every frame into a PipeWire buffer — adding 13-21% GPU overhead. Our custom gamescope adds a `gamescope_scanout` Wayland protocol that exports its composited scanout buffer directly as DMA-BUF file descriptors. Sunshine connects to this protocol and reads the frames with zero copy, matching the performance of root-requiring KMS capture (~44% GPU) without needing any elevated privileges.
 
+Recent scanout fixes keep 90/120fps stable across Moonlight reconnects, expose HDR correctly to games via the patched EDID + `DXVK_HDR`, and avoid idle GPU usage by only forcing repaint during recent software-cursor movement instead of repainting every VBlank for the entire lifetime of a stream.
+
 **Key changes:**
 - New Wayland protocol: `gamescope-scanout.xml`
-- Server-side implementation in `wlserver.cpp`: per-client rate limiting, commit-skip, HDR metadata, triple-buffer safety
+- Server-side implementation in `wlserver.cpp`: per-client rate limiting, commit-skip, HDR metadata, triple-buffer safety, explicit unsubscribe for persistent clients
 - Integration hook in `steamcompmgr.cpp`: event-driven frame export after each paint cycle
 
 ### Custom Sunshine
 
 A fork of [Sunshine](https://github.com/LizardByte/Sunshine) (self-hosted game streaming server) with a **gamescope scanout capture backend**.
 
-Instead of going through PipeWire or requiring DRM access, this Sunshine build connects directly to gamescope's Wayland compositor and uses the `gamescope_scanout` protocol to receive frames. The capture backend maintains a persistent Wayland connection that survives display reinit cycles (HDR toggling, resolution changes), avoiding the ~400ms reconnection penalty.
+Instead of going through PipeWire or requiring DRM access, this Sunshine build connects directly to gamescope's Wayland compositor and uses the `gamescope_scanout` protocol to receive frames. The capture backend maintains a persistent Wayland connection that survives display reinit cycles (HDR toggling, resolution changes), avoiding the ~400ms reconnection penalty, while explicitly unsubscribing when the active display is torn down so idle connections do not keep gamescope repainting.
 
 **Key changes:**
 - New capture backend: `gamescopegrab.cpp` (~575 lines)
-- Persistent Wayland connection singleton that survives display reinit
+- Persistent Wayland connection singleton that survives display reinit, with explicit unsubscribe on teardown
 - Event-driven capture with per-frame HDR metadata
 - Priority in capture method selection: NvFBC > **Gamescope** > Wayland > KMS > X11
+
+**Planned: rebase onto upstream Sunshine.** The Vulkan encoder this fork carried (`vulkan_encode.cpp`, the `vk_*` options) has since been merged into upstream Sunshine. The plan is to rebase the `Sunshine` submodule onto upstream `master`, keep only the gamescope capture backend on top, and drop the fork's own Vulkan encoder changes. See `SUNSHINE_GAMESCOPE_PORT_HANDOVER.md` and `PENDING_TASKS.md`.
 
 ### Input Isolation (Shim + Daemon)
 
@@ -43,6 +47,12 @@ Container input isolation is handled by two cooperating components:
 An `LD_PRELOAD` library that **tags** every virtual input device created inside the container with a container identifier.
 
 When a process creates a virtual input device via `/dev/uinput` or `/dev/uhid`, the device appears globally in the kernel's input subsystem — visible to the host and other containers. The shim solves this by intercepting libc calls (`open`, `ioctl`, `write`) and overriding the `phys` field on every device with `container-<CONTAINER_ID>`.
+
+The image installs **both 64-bit and 32-bit variants** of the shim:
+- `/usr/lib64/libuinput_shim.so` for native 64-bit processes
+- `/usr/lib/libuinput_shim.so` for 32-bit processes such as Steam's main client bootstrap
+
+Steam is launched through a small wrapper that sets `LD_PRELOAD=/usr/$LIB/libuinput_shim.so`, letting the dynamic loader pick the correct shim for each process ABI. This is required for Steam Input virtual controllers created by the 32-bit Steam client to be tagged and mirrored back into the container's private `/dev/input`.
 
 This works for:
 - **uinput devices** (mouse, keyboard, gamepads via Inputtino and Steam Input): the shim intercepts `UI_SET_PHYS` and `UI_DEV_CREATE` ioctls
@@ -78,21 +88,81 @@ The daemon also:
 
 ### Resolution and Refresh Rate
 
-The output resolution is set at container startup via environment variables:
+The initial output resolution is set at container startup via environment variables:
 
 - `SCREEN_WIDTH` (default: 1920) — gamescope output width
 - `SCREEN_HEIGHT` (default: 1080) — gamescope output height
 - `CUSTOM_REFRESH_RATES` (default: 60,90,120) — available refresh rates
 
-To stream at a different resolution, restart the container with different values (e.g., `-e SCREEN_WIDTH=2560 -e SCREEN_HEIGHT=1440`).
+**Dynamic resolution**: When a Moonlight client connects, Sunshine runs `set-resolution.sh` which calls `wlr-randr` to change gamescope's output resolution and refresh rate to match the client request. This uses the `wlr-output-management` Wayland protocol, which the headless backend now implements. The change propagates through:
 
-> **Runtime resolution changes** are not yet supported. The headless backend does not expose the `wlr-output-management` Wayland protocol, so wlr-randr cannot connect. This is planned for a future update.
+1. Gamescope compositor output (Vulkan images recreated)
+2. All Xwayland server modes (games see the new resolution)
+3. Scanout export to Sunshine (stream matches client resolution)
+
+Steam can also switch between the configured `CUSTOM_REFRESH_RATES` via its frame limit setting, which calls `HackTemporarySetDynamicRefresh()` on the headless backend.
 
 ### HDR
 
-HDR10 output is enabled by default via the `--hdr-enabled` gamescope flag. The headless backend reports BT.2020/PQ colorimetry with 1000 nit max content light level. HDR metadata is sent per-frame through the scanout export protocol to Sunshine, which forwards it to the Moonlight client.
+The headless backend always advertises HDR10 capability (BT.2020/PQ, 1000 nit peak). HDR output is activated when gamescope is started with `--hdr-enabled` (set by default via `ENABLE_GAMESCOPE_HDR=1`). A synthetic EDID with HDR static metadata is generated and written to `$GAMESCOPE_PATCHED_EDID_FILE` so Steam and games can detect HDR support. HDR metadata is sent per-frame through the scanout export protocol to Sunshine, which forwards it to the Moonlight client.
 
 To disable HDR, set `ENABLE_GAMESCOPE_HDR=0` in the podman run command (e.g., `-e ENABLE_GAMESCOPE_HDR=0`).
+
+### Sleep / DPMS
+
+Steam's idle sleep settings work inside the container. When sleep triggers, gamescope enters DPMS mode (black screen, no frames streamed). On real hardware the power button resumes the system; in a container, gamescope instead wakes automatically when:
+
+- A Moonlight client reconnects (scanout subscribe)
+- Any keyboard or mouse input arrives from the streaming client
+
+This means you can let Steam sleep normally — just reconnect from Moonlight or move the mouse to wake it up. No need to set sleep to "never".
+
+### Steam Overlay Keyboard Shortcuts
+
+Gamescope maps `Ctrl+1` to the Steam overlay and `Ctrl+2` to the quick-access menu by default. These conflict with some games, so `run.sh` disables the Ctrl mappings by default while preserving the gamepad Home-button behavior and `Super+1` / `Super+2` mappings.
+
+To restore the Ctrl shortcuts for an instance, start it with:
+
+```bash
+GS_ENABLE_CTRL_12=1 ./run.sh 1 57989
+```
+
+### Decky / RyzenAdj TDP Control
+
+SimpleDeckyTDP can use its bundled RyzenAdj binary from inside the container, but RyzenAdj needs hardware-level host access that is intentionally disabled by default. After installing Decky Loader and SimpleDeckyTDP inside the container, launch the instance with:
+
+```bash
+ENABLE_RYZENADJ=1 ./run.sh 1 57989
+```
+
+This grants container root `CAP_SYS_RAWIO`, `/dev/mem`, and read/write access to `/sys/bus/pci/devices/0000:00:00.0/config`; all other `/sys` paths remain read-only. It is only appropriate for a trusted single-user container, because container root can then tune the host APU.
+
+The host must already pass `sudo ryzenadj -i`. If its PCI host-bridge path differs, set `RYZENADJ_PCI_CONFIG` to the path used by host RyzenAdj. Do not run competing host-side and container-side TDP controllers at the same time.
+
+### Desktop Mode (Switch to Desktop)
+
+The container supports switching from Steam Game Mode to a full desktop environment and back — without restarting gamescope or the streaming session. This mirrors the "Switch to Desktop" feature on SteamOS/Steam Deck.
+
+**Architecture**: A `session-supervisor.sh` replaces the direct Steam launch as gamescope's `CLIENTCMD`. It manages a state machine that alternates between running Steam (game mode) and running a nested [labwc](https://labwc.github.io/) Wayland compositor (desktop mode). labwc connects to gamescope as a native Wayland client (`WLR_BACKENDS=wayland`), and gamescope's XDG focus fallback promotes it as the composited window when no X11 (Steam) window is focused.
+
+**Desktop environment**: labwc runs with waybar (taskbar), wofi (app launcher), mako (notifications), foot (terminal), thunar (file manager), and firefox. A custom GameHub theme provides a consistent dark-blue aesthetic.
+
+**Switching to desktop**:
+1. User selects "Switch to Desktop" from Steam's menu (installed as a non-Steam shortcut)
+2. `switch-to-desktop.sh` writes `desktop` to the mode-request file and sends `steam +quit`
+3. The session supervisor waits for Steam teardown, then launches labwc inside gamescope
+
+**Returning to Steam**:
+1. User clicks "Return to Steam" in waybar or presses `Super+Escape`
+2. `return-to-steam.sh` writes `steam` to the mode-request file and kills labwc
+3. The session supervisor shows a splash screen (via `foot` on gamescope's XDG shell) and launches Steam
+4. Once Steam's X11 window takes focus, the splash is no longer rendered
+
+**SteamOS compatibility**: `steamos-session-select` and `return-to-gamemode` are provided as shims that route to the appropriate switch/return scripts, so Steam's built-in "Switch to Desktop" button works without modification.
+
+**Gamescope changes for desktop mode**:
+- **XDG focus fallback** (`steamcompmgr.cpp`): When no X11 window has focus, the compositor promotes the highest-priority XDG toplevel (labwc) as the focus window for painting and scanout export
+- **XDG surface destroy fix** (`wlserver.cpp`): The destroy handler no longer returns early when `wl_surface` cleanup runs before `xdg_surface` cleanup during abrupt client disconnects, preventing a dangling-pointer crash that previously made returning to Steam crash gamescope
 
 ## Prerequisites
 
@@ -117,9 +187,11 @@ sudo udevadm trigger
   - `ID_SEAT="seat9"` — assigns to a non-existent seat, hiding from systemd-logind
   - `LIBINPUT_IGNORE_DEVICE="1"` — libinput (and desktop compositors) ignores them
 
+**Coexistence with host Sunshine**: Safe to install alongside stock host rules such as `60-sunshine.rules` / `60-sunshine-ublue.rules`. Host Sunshine pads keep their normal names (`Sunshine X-Box One…`, `Sunshine PS5…`) and are not matched. Container UHID pads are renamed to `Container Sunshine…`, so host rules that match exact Sunshine names leave host gamepads alone. The only overlap is that this rule opens `/dev/uinput` and `/dev/uhid` to `0666` (host Sunshine still works; access is slightly broader than stock `0660`).
+
 #### 2. Add your user to the `input` group
 
-Required for `/dev/uinput` access (even in rootless containers):
+Required for `/dev/uinput` access in **rootless** containers (and for native host Sunshine as your user). **Not required** for rootful `./run.sh` / `sudo podman run` — root passes the devices in.
 
 ```bash
 sudo usermod -aG input $USER
@@ -146,13 +218,15 @@ This is a multi-stage build:
 1. **gamescope-builder**: Compiles custom gamescope with Meson (~5 min)
 2. **sunshine-builder**: Compiles custom Sunshine with CMake, fetches Boost/FFmpeg via FetchContent (~10 min)
 3. **shim-builder**: Compiles the uinput tagging shim and mknod daemon (~5 sec)
-4. **runtime**: Fedora 43 with Valve's Mesa/PipeWire from Bazzite COPRs, Steam, and the built binaries
+4. **runtime**: Fedora 44 with Valve's Mesa/PipeWire from Bazzite COPRs, Steam, and the built binaries
 
 Subsequent builds are faster due to Docker layer caching.
 
 ## Running
 
 ### Single instance
+
+Prefer `./run.sh` (or `./run.sh 1 57989` for a custom port range). Manual equivalent:
 
 ```bash
 # Check your hidraw major number: grep hidraw /proc/devices (commonly 241-243)
@@ -174,6 +248,7 @@ sudo podman run -d \
     -v sunshine-steam:/home/gamer/.steam \
     -v sunshine-local:/home/gamer/.local/share/Steam \
     -v sunshine-config:/home/gamer/.config/sunshine \
+    -v /var/mnt/DATA:/mnt/DATA:rw,rslave \
     -e CONTAINER_ID=sunshine-1 \
     -e SCREEN_WIDTH=1920 \
     -e SCREEN_HEIGHT=1080 \
@@ -182,11 +257,15 @@ sudo podman run -d \
     gamehub-container:latest
 ```
 
+**Host data volume**: Mount shared storage only at a non-Steam path such as `/mnt/DATA`. Do **not** bind-mount under `/run/media/deck/...` (or `/run/media/<user>/...`). SteamOS/Steam treat that path as removable/external storage and will show the volume as an external drive. To use a Steam library on the host disk, mount at `/mnt/DATA` and add e.g. `/mnt/DATA/SteamLibrary` manually in Steam (via `libraryfolders.vdf`), not via the external-drive UI.
+
 ### Multiple instances
 
 Each instance needs a unique `CONTAINER_ID`, unique Sunshine port range, and separate storage volumes.
 
 **Important**: Sunshine's internal ports must match the external ports. Use the `SUNSHINE_PORT` environment variable to set the base port (e.g., `-e SUNSHINE_PORT=57989`). Sunshine derives all other ports from this base (HTTP = port - 5, RTSP = port + 21, etc.). Use 1:1 port mapping so Moonlight can reach all ports correctly during pairing.
+
+`run.sh` also starts a detached host-side mDNS publisher for Moonlight discovery. It advertises the same service native Sunshine uses: `<container-name>._nvstream._tcp` on the Sunshine HTTP port. Publisher logs are written to `/tmp/gamehub-mdns-<container-name>.log`.
 
 ```bash
 # Instance 1 — default ports (47984-48010)
@@ -202,6 +281,7 @@ sudo podman run -d --name sunshine-1 \
     -v s1-steam:/home/gamer/.steam \
     -v s1-local:/home/gamer/.local/share/Steam \
     -v s1-config:/home/gamer/.config/sunshine \
+    -v /var/mnt/DATA:/mnt/DATA:rw,rslave \
     -e CONTAINER_ID=sunshine-1 \
     -e SCREEN_WIDTH=1920 \
     -e SCREEN_HEIGHT=1080 \
@@ -223,6 +303,7 @@ sudo podman run -d --name sunshine-2 \
     -v s2-steam:/home/gamer/.steam \
     -v s2-local:/home/gamer/.local/share/Steam \
     -v s2-config:/home/gamer/.config/sunshine \
+    -v /var/mnt/DATA:/mnt/DATA:rw,rslave \
     -e CONTAINER_ID=sunshine-2 \
     -e SUNSHINE_PORT=57989 \
     -e SCREEN_WIDTH=1920 \
@@ -257,6 +338,29 @@ podman compose logs -f
 4. For multi-instance setups: set `SUNSHINE_PORT` env var to match the external port mapping (or set `port` in the Sunshine web UI under Configuration > Network)
 5. Pair with Moonlight on your client device
 
+**Remote Web UI / CSRF**: Opening the UI from a non-localhost origin (e.g. `https://192.168.x.x:57990`) can be blocked by CSRF protection. Add that exact origin to Sunshine config and restart Sunshine only:
+
+```bash
+# In ~/.config/sunshine/sunshine.conf inside the container
+csrf_allowed_origins = https://192.168.x.x:57990
+
+# Restart Sunshine without restarting the container
+sudo podman exec -u gamer <container> bash -c \
+  'XDG_RUNTIME_DIR=/run/user/1000 systemctl --user restart sunshine.service'
+```
+
+### Gamepad type and Steam Input
+
+Sunshine creates one virtual pad via Inputtino (Xbox One uinput, Switch, or DualSense UHID). Steam Deck UI often enables **Steam Input**, which then creates a second pad (typically `Microsoft X-Box 360 pad` with Valve VID `28de`). That second pad is intentional — Steam remaps the real device so games see a stable Xbox layout while Steam keeps gyro, touchpad, and per-game configs on the source pad.
+
+| Goal | Recommendation |
+|------|----------------|
+| Gyro / DualSense features | Keep DS5: `gamepad = ds5`, or leave auto with client motion sensors (`motion_as_ds4`) |
+| Avoid dual-layout confusion | Per-game Steam Input **Forced On** (use Steam's X360 pad) or **Forced Off** (raw Sunshine pad only) |
+| Xbox-only, no motion | `gamepad = xone` and disable `motion_as_ds4` / `touchpad_as_ds4` so auto never picks DS5 |
+
+Deck UI can look correct while a game has inverted/wrong face buttons if the game binds the **wrong** pad (or both). Check with `cat /proc/bus/input/devices` while streaming for both `Sunshine`/`Container Sunshine` and Steam/`X-Box 360` devices.
+
 ## Rootful vs Rootless Podman
 
 **Rootful podman (`sudo podman run`) is recommended** for multi-instance setups. The input isolation system requires `mknod` to create device nodes in the container's private `/dev/input/` tmpfs, and the Linux kernel blocks `mknod` for character devices in user namespaces — even with `--privileged`.
@@ -276,7 +380,9 @@ podman compose logs -f
 
 ### Rootless single-instance workaround
 
-For a single instance without input isolation, you can run rootless with `--privileged` and WITHOUT the `/dev/input/` tmpfs. All host input devices will be visible inside the container, but the udev rule prevents the host from consuming container-created devices:
+True private `/dev/input` isolation still needs rootful podman (`mknod` of character devices is blocked in user namespaces). Rootless can still *use* virtual pads by bind-mounting host `/dev/input` and allowing the input/hidraw majors via `--device-cgroup-rule` — but then host devices are visible and multi-instance isolation is gone.
+
+For a single instance without isolation, run rootless with `--privileged` and WITHOUT the `/dev/input/` tmpfs. All host input devices will be visible inside the container, but the udev rule prevents the host from consuming container-created devices:
 
 ```bash
 podman run -d \
@@ -303,7 +409,7 @@ podman run -d \
 ┌──────────────────────────────────────────────────────────────┐
 │  Container (rootful Podman recommended for multi-instance)    │
 │                                                              │
-│  LD_PRELOAD=libuinput_shim.so (Sunshine only)                │
+│  LD_PRELOAD=/usr/$LIB/libuinput_shim.so                      │
 │  CONTAINER_ID=sunshine-1                                     │
 │                                                              │
 │  ┌──────────────┐    Wayland      ┌──────────────────┐      │
@@ -326,7 +432,7 @@ podman run -d \
 │         │ uinput ioctl                     │ uinput         │
 │         ▼                                  ▼                │
 │  ┌──────────────────────────────────────────────────────┐   │
-│  │  libuinput_shim.so (LD_PRELOAD)                      │   │
+│  │  libuinput_shim.so (LD_PRELOAD, 32-bit + 64-bit)    │   │
 │  │  Tags phys="container-sunshine-1" on all devices      │   │
 │  │  (uinput via ioctl, UHID via write)                   │   │
 │  │  UHID: also prefixes name with "Container ",          │   │
@@ -372,12 +478,14 @@ Host udev:   ATTRS{phys}=="container-*" OR ATTRS{name}=="Container *" →
 
 ## Known Limitations
 
-- **Rootless podman + input isolation**: The kernel blocks `mknod` for character devices in user namespaces. The `input-mknod-daemon` cannot create `/dev/input/` device nodes in rootless mode. Use rootful podman (`sudo podman run`) for multi-instance input isolation.
-- **No dynamic resolution**: Gamescope's headless backend does not expose the `wlr-output-management` protocol, so wlr-randr cannot change resolution/refresh at runtime. Set `SCREEN_WIDTH`/`SCREEN_HEIGHT` at container start. Runtime resolution support (via wlr-output-management or gamescope-private convars) is planned.
+- **Rootless podman + input isolation**: The kernel blocks `mknod` for character devices in user namespaces. The `input-mknod-daemon` cannot create `/dev/input/` device nodes in rootless mode. Use rootful podman (`sudo podman run`) for multi-instance input isolation. Rootless can still see virtual pads only by mounting host `/dev/input` (no isolation).
+- **HDR in games**: HDR is enabled at the compositor level via `GAMESCOPE_DISPLAY_SUPPORTS_HDR`, but games detect HDR through the patched EDID file (`GAMESCOPE_PATCHED_EDID_FILE`) and the `DXVK_HDR` environment variable. Both must be present in gamescope's environment — the container-env.conf systemd drop-in and environment.d/container.conf handle this.
 - **Port mapping and pairing**: Sunshine's internal ports must match external ports for Moonlight pairing to work. Use 1:1 port mapping (e.g., `-p 57989:57989`) and set `port = <HTTPS_PORT>` in sunshine.conf. NAT-style mapping (e.g., `57989:47989`) causes "certificate mismatch" errors during pairing.
+- **CSRF on remote Web UI**: Non-localhost origins need `csrf_allowed_origins` in `sunshine.conf` (see First run). `origin_web_ui_allowed = wan` alone is not enough for CSRF.
 - **Steam startup**: Steam in SteamOS mode may restart once during initial setup (~1-2 min). SteamOS compatibility stubs are included to prevent extended crash loops, but the first session restart is normal.
+- **Host DATA as external drive**: Bind-mounting host storage under `/run/media/deck/...` makes SteamOS treat it as removable storage. Prefer `/mnt/DATA` only (see Running).
 - **Gamepad/hidraw hotplug**: The mknod daemon creates fake udev DB entries and sends synthetic netlink events (MurmurHash2 subsystem filter + `USEC_INITIALIZED`) for SDL/Steam gamepad discovery. Requires `CAP_NET_ADMIN` for the netlink socket.
-- **DualSense (DS5) detection**: DS5 mode requires the Moonlight client to advertise motion controls or manual `gamepad = ds5` in sunshine.conf. The `hid-playstation` kernel module must be loaded on the host. DS5 uses UHID (not uinput), and the kernel doesn't propagate UHID phys to child sysfs attributes — the shim works around this by recording UHID device names to a claim file and prefixing names with "Container" for host-side isolation.
+- **DualSense (DS5) + Steam Input dual pads**: DS5 is auto-selected when the client reports motion (`motion_as_ds4`) or touchpad (`touchpad_as_ds4`), or with `gamepad = ds5`. Requires `hid-playstation` on the host. UHID phys is not propagated to child sysfs nodes — the shim uses a claim file and `Container ` name prefix. Steam Input often creates a second Xbox 360 virtual pad on top; Deck UI uses Steam's pad, while some games bind the raw DS5 (or both), which can look like inverted face buttons. Use per-game Steam Input Forced On/Off, or force `gamepad = xone` if gyro is not needed (see Gamepad type and Steam Input).
 - **tmpfs /dev/input/ requires `dev` flag**: The `--tmpfs /dev/input:rw,dev,...` mount must include `dev` explicitly. Without it, podman defaults to `nodev` which blocks all character device access on the tmpfs, even with correct file permissions.
 - **dup()/dup2() tracking**: If a process duplicates a uinput file descriptor, the shim loses tracking of the new fd. The mknod daemon still picks up the device via polling, but the `phys` field won't be tagged. This is uncommon in practice.
 - **Networking for multiple instances**: With `--network=host`, all instances share the host network. For multiple instances, use `SUNSHINE_PORT` env var and bridge networking with explicit 1:1 port mapping.
