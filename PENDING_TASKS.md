@@ -22,17 +22,19 @@ isolation, submodules rebased onto upstream).
   mappings on it (`src/wlserver.cpp`), and the variable reaches `gamescope-wl`
   via `/run/container.env`. Not yet tested by pressing the keys.
 - Old untracked `wolf/`, `Sunshine-upstream-gamescope/` and `.vscode/` are gone.
-- **Host input isolation test** (`scripts/test-host-input-isolation.py`, run as
-  your user). With the current udev rule (2026-10-19): tagged keyboard, mouse
-  and touchscreen are absent from libinput seat0, and the untagged control
-  devices are present, so desktop isolation holds. The tagged gamepad is still
-  visible to host SDL3 and readable: host programs running as the same user
-  can open container nodes. Fix in progress: `gamehub-hide-input-node` (udev
-  helper installed by `scripts/install-host-udev-rules.sh`) moves tagged
-  `event*`/`js*`/`hidraw*` nodes to `/dev/gamehub-input/<name>`, then gives them
-  to the host user. Nodes stay root-only at their public path until hidden, so
-  Flatpak Steam's inotify watcher cannot open them in between. Pending: reinstall
-  the rules, then rerun the test (expect PASS).
+- **Host input isolation** (2026-10-19). Before the fix, libinput already
+  ignored tagged keyboard/mouse/touch, but host SDL3 could open a tagged
+  gamepad because the host user owns rootless container nodes. Fix:
+  `gamehub-hide-input-node` (udev helper installed by
+  `scripts/install-host-udev-rules.sh`) moves tagged `event*`/`js*`/`hidraw*`
+  nodes to `/dev/gamehub-input/<name>` (0700, container root's subuid), then
+  gives them to the host user; at the public path they stay root-only, so
+  Flatpak Steam's inotify watcher cannot open them in between. Verified:
+  `scripts/test-host-input-isolation.py` PASSes all 12 checks, and in
+  `sunshine-2` a tagged pad is bound from the hidden dir, `gamer` opens and
+  reads it, and both sides clean up on unplug.
+- **`/dev/uhid`** is now loaded at boot and `0666` (section 1 below kept for
+  reference on other hosts).
 
 ## 1. Host setup: `/dev/uhid`
 
