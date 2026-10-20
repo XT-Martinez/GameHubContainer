@@ -1,0 +1,91 @@
+#!/bin/bash
+# Hide container virtual input device nodes from host processes.
+#
+# Installed by scripts/install-host-udev-rules.sh to
+# /usr/local/libexec/gamehub-hide-input-node and invoked by udev (as root):
+#
+#   gamehub-hide-input-node add|remove <kernel-name> [<devnode>]
+#
+# Container gamepads are created with the host user as owner, so host programs
+# running as that same user (Steam, SDL games, browsers) could open
+# /dev/input/eventN, /dev/input/jsN or /dev/hidrawN directly. "add" moves the
+# node out of its normal path into HIDE_DIR, which is owned by the host subuid
+# that container root maps to and has mode 0700. Host user processes then get
+# EACCES on open, and udev-based enumerators get ENOENT for the old path. The
+# rootless container still reaches the node through its bind mount.
+#
+# "remove" deletes the hidden node when the device disappears.
+
+set -euo pipefail
+
+# Filled in by the installer (scripts/install-host-udev-rules.sh).
+HIDE_UID=@GAMEHUB_HIDE_UID@
+HIDE_GID=@GAMEHUB_HIDE_GID@
+NODE_USER=@GAMEHUB_NODE_USER@
+NODE_GROUP=@GAMEHUB_NODE_GROUP@
+
+HIDE_DIR=/dev/gamehub-input
+
+log() {
+    echo "gamehub-hide-input-node: $*" >&2
+    if command -v logger >/dev/null 2>&1; then
+        logger -t gamehub-hide-input-node -- "$*" || true
+    fi
+}
+
+[[ "$HIDE_UID" =~ ^[0-9]+$ && "$HIDE_GID" =~ ^[0-9]+$ ]] || {
+    echo "gamehub-hide-input-node: installed copy has no valid HIDE_UID/HIDE_GID; reinstall" >&2
+    exit 1
+}
+[[ "$NODE_USER" =~ ^[A-Za-z0-9._-]+$ && "$NODE_GROUP" =~ ^[A-Za-z0-9._-]+$ ]] || {
+    echo "gamehub-hide-input-node: installed copy has no valid NODE_USER/NODE_GROUP; reinstall" >&2
+    exit 1
+}
+
+action="${1:-}"
+kname="${2:-}"
+devnode="${3:-}"
+
+case "$action" in
+    add|remove) ;;
+    *) log "usage: $0 add|remove <kernel-name> [<devnode>]"; exit 0 ;;
+esac
+
+if [[ ! "$kname" =~ ^(event|js|hidraw)[0-9]+$ ]]; then
+    log "refusing unexpected kernel name: '$kname'"
+    exit 0
+fi
+
+hidden="$HIDE_DIR/$kname"
+
+if [ "$action" = remove ]; then
+    rm -f -- "$hidden"
+    exit 0
+fi
+
+# add: make sure the hidden directory exists with the right owner and mode.
+# devtmpfs is recreated on every boot, so this is applied on each event.
+mkdir -p -- "$HIDE_DIR"
+chown "$HIDE_UID:$HIDE_GID" -- "$HIDE_DIR"
+chmod 0700 -- "$HIDE_DIR"
+
+if [ -n "$devnode" ]; then
+    if [[ "$devnode" != /dev/* || "$devnode" == *"/../"* || "$devnode" == */.. ]]; then
+        log "refusing devnode outside /dev: '$devnode'"
+    elif [ -e "$devnode" ]; then
+        if [ -c "$devnode" ]; then
+            # Same filesystem (devtmpfs), so this is a rename that keeps inode, owner and mode.
+            mv -f -- "$devnode" "$hidden"
+        else
+            log "not a character device, not hiding: '$devnode'"
+        fi
+    fi
+    # Otherwise the node was already moved (for example on a "change" event).
+fi
+
+# Hand the hidden node to the host user only after it is inside HIDE_DIR. Runs on
+# every add/change so a node that was already moved gets its owner and mode re-applied.
+if [ -c "$hidden" ] && [ ! -L "$hidden" ]; then
+    chown -- "$NODE_USER:$NODE_GROUP" "$hidden"
+    chmod 0600 -- "$hidden"
+fi

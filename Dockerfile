@@ -63,6 +63,7 @@ RUN meson setup builddir \
     --buildtype=release \
     --force-fallback-for=wlroots,libliftoff,vkroots \
     -Dpipewire=enabled \
+    -Denable_tests=false \
     && ninja -C builddir \
     && DESTDIR=/build/install ninja -C builddir install
 
@@ -114,9 +115,11 @@ RUN cmake -B build -G "Unix Makefiles" \
     -DSUNSHINE_ENABLE_CUDA=OFF \
     -DSUNSHINE_ENABLE_DRM=ON \
     -DSUNSHINE_ENABLE_GAMESCOPE=ON \
+    -DSUNSHINE_ENABLE_KWIN=OFF \
     -DSUNSHINE_ENABLE_PORTAL=ON \
     -DSUNSHINE_ENABLE_WAYLAND=ON \
     -DSUNSHINE_ENABLE_X11=ON \
+    -DSUNSHINE_ENABLE_TRAY=OFF \
     -DSUNSHINE_BUILD_FLATPAK=OFF \
     && make -j$(nproc) -C build \
     && DESTDIR=/build/install make -C build install
@@ -417,6 +420,11 @@ RUN systemctl mask \
         serial-getty@.service \
         systemd-udev-trigger.service \
         fstrim.timer && \
+    # rtkit needs CAP_SYS_NICE (granted only in rootful mode; rootless cannot
+    # do realtime scheduling). Skip it cleanly instead of crash-looping.
+    mkdir -p /etc/systemd/system/rtkit-daemon.service.d && \
+    printf '%s\n' '[Unit]' 'ConditionCapability=CAP_SYS_NICE' \
+        > /etc/systemd/system/rtkit-daemon.service.d/container.conf && \
     # Ensure tmpfiles creates XDG_RUNTIME_DIR and fixes volume mount ownership
     printf '%s\n' \
         "d /run/user/${GAMER_UID} 0700 gamer gamer -" \

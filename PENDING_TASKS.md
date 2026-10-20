@@ -1,61 +1,101 @@
 # Pending Tasks
 
-Open follow-ups for the `desktop_mode` branch.
+Open follow-ups after the `rootless-podman` branch (rootless podman input
+isolation, submodules rebased onto upstream).
 
-## 1. Implement `GS_ENABLE_CTRL_12`
+## Done
 
-`run.sh` passes `GS_ENABLE_CTRL_12` into the container (default `0`), and
-`services/container-env.service` writes it to `/run/container.env`. Nothing in
-this repo reads it yet, so the README claim that the Ctrl+1 / Ctrl+2 gamescope
-mappings are disabled by default is not currently true.
+- **Rootless podman with input isolation.** `run.sh` runs rootless by default;
+  the input daemon bind-mounts this container's tagged host nodes instead of
+  using mknod. Smoke-tested: hotplug, ownership, read/write open, udev DB, and
+  cleanup on unplug all pass, and host devices stay invisible.
+- **Sunshine rebased onto upstream.** `Sunshine` now tracks
+  `gamescope-capture-upstream`: upstream LizardByte/Sunshine with only the
+  gamescope scanout capture backend ported on top. The fork's Vulkan encoder
+  changes are dropped (upstream ships `h264/hevc/av1_vulkan`, confirmed working
+  with upstream's prebuilt FFmpeg).
+- **gamescope rebased onto upstream.** `gamescope` now tracks
+  `gamescope-ba-rebased` (ValveSoftware/gamescope master plus the fork's
+  commits), including a fix for a headless crash when a scanout export client
+  subscribes before the first composite.
+- **`GS_ENABLE_CTRL_12`.** The rebased gamescope gates the Ctrl+1 / Ctrl+2
+  mappings on it (`src/wlserver.cpp`), and the variable reaches `gamescope-wl`
+  via `/run/container.env`. Not yet tested by pressing the keys.
+- Old untracked `wolf/`, `Sunshine-upstream-gamescope/` and `.vscode/` are gone.
+- **Host input isolation** (2026-10-19). Before the fix, libinput already
+  ignored tagged keyboard/mouse/touch, but host SDL3 could open a tagged
+  gamepad because the host user owns rootless container nodes. Fix:
+  `gamehub-hide-input-node` (udev helper installed by
+  `scripts/install-host-udev-rules.sh`) moves tagged `event*`/`js*`/`hidraw*`
+  nodes to `/dev/gamehub-input/<name>` (0700, container root's subuid), then
+  gives them to the host user; at the public path they stay root-only, so
+  Flatpak Steam's inotify watcher cannot open them in between. Verified:
+  `scripts/test-host-input-isolation.py` PASSes all 12 checks, and in
+  `sunshine-2` a tagged pad is bound from the hidden dir, `gamer` opens and
+  reads it, and both sides clean up on unplug.
+- **`/dev/uhid`** is now loaded at boot and `0666` (section 1 below kept for
+  reference on other hosts).
 
-- Find where gamescope's Ctrl+1 / Ctrl+2 mappings live (likely the `gamescope`
-  submodule, `src/wlserver.cpp` / `src/LibInputHandler.cpp`) and gate them on
-  `GS_ENABLE_CTRL_12`.
-- Keep the gamepad Home-button behavior and the `Super+1` / `Super+2` mappings.
-- Make sure the variable reaches gamescope (e.g. via `gamescope-session-plus`).
-- Until done, treat the README "Steam Overlay Keyboard Shortcuts" section as
-  describing intended behavior.
+## 1. Host setup: `/dev/uhid`
 
-## 2. Submodule follow-ups
+`/dev/uhid` on the host is still `root 0600` (the `uhid` module was not loaded
+when the udev rule was installed), so DualSense (UHID) emulation will not work.
+Fix:
 
-- `gamescope` (branch `gamescope-ba`): DONE. Input fixes (`LibInputHandler.cpp`,
-  `wlserver.cpp`) committed and pushed (`5c46078`), along with the previously
-  unpushed commits; the superproject pointer was bumped to match.
-  Still uncommitted and intentionally left out: `subprojects/stb.wrap` (looks like
-  a local build workaround; the `[wrap-file]` has no source URL/hash),
-  `subprojects/wlroots` (dirty nested submodule), and `build-output/`.
-- `Sunshine` (branch `vulkan-pr-4`): do NOT commit the local changes
-  (`src/config.cpp`, `src/config.h`, `src/platform/linux/vulkan_encode.cpp`,
-  `src/video.cpp`, `third-party/build-deps`); see 2a.
+```bash
+sudo modprobe uhid && echo uhid | sudo tee /etc/modules-load.d/uhid.conf && sudo udevadm trigger --action=add --sysname-match=uhid
+```
 
-## 2a. Rebase `Sunshine` onto upstream and drop our Vulkan changes
+## 2. Runtime checks still to do
 
-The Vulkan encoder is now merged upstream (LizardByte/Sunshine), so the
-`vulkan-pr-4` fork changes should be dropped rather than committed.
+- Connect a real Moonlight client to the rootless container and stream (video,
+  audio, keyboard/mouse, gamepad, rumble).
+- Rootful fallback (`ROOTFUL=1` / `ENABLE_RYZENADJ=1`) has not been run since
+  the changes; check the mknod path and that rtkit now starts there.
+- Press Ctrl+1 / Ctrl+2 with `GS_ENABLE_CTRL_12=0` and `=1`.
+- Default ports 47984-48010 are taken by the host (linuxbrew) Sunshine, so
+  instance 1 cannot start while it runs. Testing used `./run.sh 2 57989`.
 
-- Verify the upstream merge contains what we need (`src/platform/linux/vulkan_encode.cpp`,
-  `vk_*` config options) and which release/commit it landed in.
-- Rebase/port only the gamescope scanout capture backend onto upstream `master`
-  (see `SUNSHINE_GAMESCOPE_PORT_HANDOVER.md`; `Dockerfile.sunshine-upstream-gamescope-build`
-  builds it).
-- Do not commit the current dirty `Sunshine` changes. The `vk_csc_offload`
-  (RGB->YCbCr offload) work in `vulkan_encode.cpp`, `video.cpp` and `config.*` is
-  not upstream. Either propose it upstream as a separate PR or drop it.
-- Repoint the `Sunshine` submodule (and `.gitmodules` url/branch) at the rebased
-  branch, then update the README "Custom Sunshine" section.
-- The `gamescope` input fixes (`LibInputHandler.cpp`, `wlserver.cpp`) are
-  independent of this and can still be committed and pushed.
+## 3. Known limitations (accepted for now)
 
-## 3. Untracked directories
+- Rootless cannot do realtime scheduling; `rtkit-daemon` is skipped
+  (`ConditionCapability=CAP_SYS_NICE`).
+- KMS/DRM capture fallback and RyzenAdj need rootful mode.
+- All instances run as one host user, so isolation protects against accidental
+  cross-talk, not a deliberately malicious container.
+- Sunshine logs "Failed to create client: Daemon not running" (no Avahi in the
+  container); harmless, the host-side mDNS publisher advertises instead.
+- Hiding the node paths (`/dev/gamehub-input`) only defends against accidental
+  pickup. A host process running as the user can still reach the nodes via
+  `podman unshare` or `/proc/<pid>/root`.
+- A separate host-uid design (container nodes owned by another host uid) was
+  rejected. Rootless podman cannot do idmapped mounts (crun `mount_setattr`
+  EPERM), so the container would lose write access to the shared `/mnt/DATA`
+  drive.
 
-- `wolf/` (clone of `games-on-whales/wolf`) and `Sunshine-upstream-gamescope/`
-  are separate git clones and were intentionally not committed. Add them to
-  `.gitignore` or make them proper submodules.
-- `.vscode/settings.json` is an empty `{}`; ignore or delete it.
+## 4. Rootless RyzenAdj (revisit later)
 
-## 4. Sunshine gamescope capture port
+RyzenAdj needs host `CAP_SYS_ADMIN` (PCI config writes) or `CAP_SYS_RAWIO`
+(`/dev/mem`); namespaced caps do not count, so it currently forces rootful mode.
+Planned approach: a small root systemd service on the host that runs RyzenAdj
+and accepts only a whitelist of clamped requests (e.g. set STAPM/fast/slow
+limits within a min/max) over a Unix socket. Bind the socket into the container
+and ship a `ryzenadj` wrapper that forwards to it. The container never gets raw
+SMU access. (Alternative considered: the out-of-tree `ryzen_smu` module with
+file-permission access; rejected for kernel-rebuild/signing upkeep.)
 
-See `SUNSHINE_GAMESCOPE_PORT_HANDOVER.md` for the in-progress port of the
-gamescope scanout capture backend onto upstream Sunshine `master`, and
-`Dockerfile.sunshine-upstream-gamescope-build` for its build.
+## 5. Cleanup
+
+- `Sunshine` checkout has untracked leftovers from the old nested-submodule
+  layout (`third-party/doxyconfig/`,
+  `packaging/linux/flatpak/deps/shared-modules/`, and dirty `third-party/tray`,
+  `third-party/libdisplaydevice`, `third-party/build-deps`). Clean them up or
+  reset the nested submodules.
+- `SUNSHINE_GAMESCOPE_PORT_HANDOVER.md` and
+  `Dockerfile.sunshine-upstream-gamescope-build` describe the now-finished port;
+  remove or archive them.
+- `gamescopegrab.cpp` still lacks doxygen comments expected upstream, and its
+  `is_event_driven()` override was removed during the port; confirm capture
+  pacing is unaffected.
+- Old submodule branches `gamescope-ba` and `vulkan-pr-4` remain on the forks;
+  delete them once the rebased branches are proven.

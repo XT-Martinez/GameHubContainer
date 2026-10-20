@@ -26,7 +26,7 @@ Recent scanout fixes keep 90/120fps stable across Moonlight reconnects, expose H
 
 ### Custom Sunshine
 
-A fork of [Sunshine](https://github.com/LizardByte/Sunshine) (self-hosted game streaming server) with a **gamescope scanout capture backend**.
+Upstream [Sunshine](https://github.com/LizardByte/Sunshine) (self-hosted game streaming server) with one addition on top: a **gamescope scanout capture backend** (submodule branch `gamescope-capture-upstream`). Encoding uses upstream's Vulkan encoder (`h264_vulkan`, `hevc_vulkan`, `av1_vulkan`).
 
 Instead of going through PipeWire or requiring DRM access, this Sunshine build connects directly to gamescope's Wayland compositor and uses the `gamescope_scanout` protocol to receive frames. The capture backend maintains a persistent Wayland connection that survives display reinit cycles (HDR toggling, resolution changes), avoiding the ~400ms reconnection penalty, while explicitly unsubscribing when the active display is torn down so idle connections do not keep gamescope repainting.
 
@@ -36,7 +36,7 @@ Instead of going through PipeWire or requiring DRM access, this Sunshine build c
 - Event-driven capture with per-frame HDR metadata
 - Priority in capture method selection: NvFBC > **Gamescope** > Wayland > KMS > X11
 
-**Planned: rebase onto upstream Sunshine.** The Vulkan encoder this fork carried (`vulkan_encode.cpp`, the `vk_*` options) has since been merged into upstream Sunshine. The plan is to rebase the `Sunshine` submodule onto upstream `master`, keep only the gamescope capture backend on top, and drop the fork's own Vulkan encoder changes. See `SUNSHINE_GAMESCOPE_PORT_HANDOVER.md` and `PENDING_TASKS.md`.
+The fork's earlier Vulkan encoder changes were dropped in favor of upstream's. The `gamescope` submodule likewise tracks `gamescope-ba-rebased`, the fork rebased onto upstream ValveSoftware/gamescope. See `PENDING_TASKS.md` for open follow-ups.
 
 ### Input Isolation (Shim + Daemon)
 
@@ -64,19 +64,24 @@ For UHID devices, the kernel does not propagate the `phys` field to child input/
 
 #### Input Device Node Daemon (`input-mknod-daemon`)
 
-A lightweight sidecar daemon that **creates device nodes** and **populates the udev database** for container-tagged devices. It handles three responsibilities:
+A lightweight sidecar daemon that **exposes device nodes** and **populates the udev database** for container-tagged devices. It handles three responsibilities:
 
-1. **Device node creation**: Polls `/sys/class/input/` and `/sys/class/hidraw/` every 500ms. For devices whose `phys` starts with `container-`, creates `/dev/input/eventN`, `/dev/input/jsN`, and `/dev/hidrawN` nodes with 0666 permissions. For UHID devices (where the kernel doesn't propagate phys), falls back to **name-based matching** against the shim's claim file (`/run/container-input/uhid-names`), but only for devices under `/sys/devices/virtual/misc/uhid/`.
+1. **Device node exposure**: Polls `/sys/class/input/` and `/sys/class/hidraw/` every 500ms. For devices whose `phys` starts with `container-`, makes `/dev/input/eventN`, `/dev/input/jsN`, and `/dev/hidrawN` available in the container's private `/dev/input/`.
+   - **Rootless (default)**: The host `/dev` is bind-mounted read-only at a hidden path, `HOST_DEV_DIR` (default `/run/gamehub-host/dev`). At startup the daemon chmods `/run/gamehub-host` to `0700`, so only container root can reach the host nodes and the `gamer` user cannot. The daemon creates an empty placeholder file under `/dev/input/` and `mount --bind`s the host node over it. `input-mknod.service` lists `HOST_DEV_DIR`, `GAMER_UID`, and `UINPUT_SHIM_DEBUG` in `PassEnvironment=`, so the `-e` values set on the container reach the system daemon. This works because rootless tmpfs mounts are `nodev` and `mknod` is denied in user namespaces. Removal unmounts with `MNT_DETACH` before unlinking.
+   - **Stale nodes**: If a container device disappears and the kernel reuses its `eventN`/`hidrawN` number for a host device, the daemon removes the stale node on the next poll. It checks that the sysfs entry is still container-tagged and that `major:minor` matches before it keeps anything.
+   - **Readiness wait**: The host udev rule applies ownership asynchronously. The daemon only binds a node once the host node is owned by `GAMER_UID` (default 1000, the in-container `gamer` user, mapped to the host user by `--userns=keep-id`). It retries on later polls, and after about 3 seconds (6 polls) proceeds anyway with a warning.
+   - **Rootful fallback**: If `HOST_DEV_DIR` is missing or the bind fails, the daemon falls back to `mknod()` with 0666 permissions. This is the only path that works under `sudo podman` with `--cap-add MKNOD`.
+   - For UHID devices (where the kernel doesn't propagate phys), falls back to **name-based matching** against the shim's claim file (`/run/container-input/uhid-names`), but only for devices under `/sys/devices/virtual/misc/uhid/`.
 
 2. **Fake udev database**: Writes `/run/udev/data/cMAJ:MIN` entries with device type properties (`ID_INPUT_JOYSTICK=1`, `ID_INPUT_KEYBOARD=1`, etc.). This allows libudev consumers (SDL/Steam) to discover devices without running udevd. Device type is determined via `ioctl(EVIOCGBIT)` capability detection.
 
-3. **Synthetic udev events**: Sends netlink messages on `NETLINK_KOBJECT_UEVENT` group 2 (the udev multicast group) with the `libudev\0` + `0xfeedcafe` header format. This triggers SDL's `udev_monitor` to pick up device hotplug events in real-time. Also creates `/run/udev/control` to signal "udev is present" to libudev.
+3. **Synthetic udev events**: Sends netlink messages on `NETLINK_KOBJECT_UEVENT` group 2 (the udev multicast group) with the `libudev\0` + `0xfeedcafe` header format. This triggers SDL's `udev_monitor` to pick up device hotplug events in real-time. Also creates `/run/udev/control` to signal "udev is present" to libudev. These netlink sends need `CAP_NET_ADMIN` in a private network namespace; rootless mode therefore uses pasta networking with published ports rather than `--network=host` (see Rootful vs Rootless).
 
 > **Why polling instead of inotify?** sysfs does not generate inotify `IN_CREATE`/`IN_DELETE` events. The daemon originally used inotify but it silently blocked forever. Polling at 500ms provides reliable detection with negligible CPU overhead.
 
 > **Why fake udev instead of running udevd?** A real udevd would create device nodes for ALL host devices visible in `/sys`, breaking container isolation. The daemon only creates nodes for `container-*` devices while still populating the udev database that SDL needs for gamepad discovery.
 
-This split design solves the **UHID async problem**: when Inputtino creates a PS5 DualSense via UHID, the kernel's `hid-playstation` driver creates child input devices asynchronously (main controller, motion sensor, touchpad). The shim can't mknod these because they don't exist yet at `write()` time. The daemon catches them on the next poll cycle.
+This split design solves the **UHID async problem**: when Inputtino creates a PS5 DualSense via UHID, the kernel's `hid-playstation` driver creates child input devices asynchronously (main controller, motion sensor, touchpad). The shim can't create or bind these nodes because they don't exist yet at `write()` time. The daemon catches them on the next poll cycle.
 
 The daemon also:
 - **Scans existing devices at startup** in case it starts after some devices are already created
@@ -135,7 +140,7 @@ SimpleDeckyTDP can use its bundled RyzenAdj binary from inside the container, bu
 ENABLE_RYZENADJ=1 ./run.sh 1 57989
 ```
 
-This grants container root `CAP_SYS_RAWIO`, `/dev/mem`, and read/write access to `/sys/bus/pci/devices/0000:00:00.0/config`; all other `/sys` paths remain read-only. It is only appropriate for a trusted single-user container, because container root can then tune the host APU.
+This switches that instance to rootful `sudo podman` (RyzenAdj cannot work rootless) and grants container root `CAP_SYS_RAWIO`, `/dev/mem`, and read/write access to `/sys/bus/pci/devices/0000:00:00.0/config`; all other `/sys` paths remain read-only. It is only appropriate for a trusted single-user container, because container root can then tune the host APU.
 
 The host must already pass `sudo ryzenadj -i`. If its PCI host-bridge path differs, set `RYZENADJ_PCI_CONFIG` to the path used by host RyzenAdj. Do not run competing host-side and container-side TDP controllers at the same time.
 
@@ -170,35 +175,55 @@ The container supports switching from Steam Game Mode to a full desktop environm
 
 #### 1. Install the udev rule
 
-This rule does two things:
-1. Prevents the host desktop from consuming virtual input devices created by containers
-2. Sets `/dev/uinput` and `/dev/uhid` to world-writable (needed for container access)
+The rules file is a template. The install script fills in your host user and primary group, installs the result to `/etc/udev/rules.d/`, and reloads udev. Run it once, as your own user (it calls `sudo` itself):
 
 ```bash
-sudo cp container-input-shim/99-sunshine-container-ignore.rules /etc/udev/rules.d/
-sudo udevadm control --reload-rules
-sudo udevadm trigger
+scripts/install-host-udev-rules.sh            # target user defaults to you
+scripts/install-host-udev-rules.sh <user>     # or name the host user explicitly
 ```
+
+Root is refused as the target. Re-run the script after changing users or after pulling updated rules.
+
+This rule does three things:
+1. Prevents the host desktop from consuming virtual input devices created by containers
+2. Sets `/dev/uinput` and `/dev/uhid` to world-writable (needed for container access)
+3. Keeps container-tagged devices `root:root 0600` at their public path, then the hide helper moves them out of reach and hands them to your host user, so they are visible inside the rootless container
 
 **What this does**:
 - `/dev/uinput` and `/dev/uhid` set to `MODE="0666"` — allows the container's non-root user to create virtual input devices
 - Container-tagged input devices (`phys` matching `container-*`) and UHID devices (name matching `Container *`) get:
+  - `OWNER`/`GROUP` are not set by the rule itself: the node stays `root:root` at its public path so a same-user program cannot open it during the window before it is moved. The hide helper then `chown`s it to your host user and its primary group. This is required for rootless: `--userns=keep-id:uid=1000,gid=1000` maps only that host user into the container, so any other owner would show up as `nobody` and be unusable. `MODE` stays `0600`, so only that user and root can open them.
   - `MODE="0600"` — strips group-read permission, which makes HHD (Handheld Daemon) skip them (critical for SteamOS/Bazzite hosts where seat-based filtering alone is insufficient)
   - `ID_SEAT="seat9"` — assigns to a non-existent seat, hiding from systemd-logind
   - `LIBINPUT_IGNORE_DEVICE="1"` — libinput (and desktop compositors) ignores them
 
-**Coexistence with host Sunshine**: Safe to install alongside stock host rules such as `60-sunshine.rules` / `60-sunshine-ublue.rules`. Host Sunshine pads keep their normal names (`Sunshine X-Box One…`, `Sunshine PS5…`) and are not matched. Container UHID pads are renamed to `Container Sunshine…`, so host rules that match exact Sunshine names leave host gamepads alone. The only overlap is that this rule opens `/dev/uinput` and `/dev/uhid` to `0666` (host Sunshine still works; access is slightly broader than stock `0660`).
+**Hidden node path**: The install script also installs `/usr/local/libexec/gamehub-hide-input-node`, which udev runs for each container-tagged node (`event*`, `js*`, `hidraw*`). It first moves the node from its normal path to `/dev/gamehub-input/<kernel-name>`, and only then `chown`s it to your host user (`0600`). The ordering matters: Flatpak Steam's SDL watches `/dev/input` with inotify and could open the node in the gap between udev's `chown` and the move, so the node is root-only at its public path until it is hidden. The directory is owned by the container root's host subuid (the start of your `/etc/subuid` range) with mode `0700`. Same-user host programs such as Steam or SDL games then get `ENOENT` or `EACCES` instead of the device. The in-container daemon checks `HOST_DEV_DIR/gamehub-input/` first and falls back to the normal path. This only prevents accidental pickup; `podman unshare` or `/proc/<pid>/root` still reach the nodes for a process running as your user.
 
-#### 2. Add your user to the `input` group
-
-Required for `/dev/uinput` access in **rootless** containers (and for native host Sunshine as your user). **Not required** for rootful `./run.sh` / `sudo podman run` — root passes the devices in.
+**uhid (DualSense emulation)**: `/dev/uhid` must be usable by the rootless container. If it is `root 0600` (the `uhid` module is not loaded), run:
 
 ```bash
-sudo usermod -aG input $USER
-# Log out and back in for the group change to take effect
+sudo modprobe uhid && echo uhid | sudo tee /etc/modules-load.d/uhid.conf && sudo udevadm trigger --action=add --sysname-match=uhid
 ```
 
-#### 3. GPU access
+**Coexistence with host Sunshine**: Safe to install alongside stock host rules such as `60-sunshine.rules` / `60-sunshine-ublue.rules`. Host Sunshine pads keep their normal names (`Sunshine X-Box One…`, `Sunshine PS5…`) and are not matched. Container UHID pads are renamed to `Container Sunshine…`, so host rules that match exact Sunshine names leave host gamepads alone. The only overlap is that this rule opens `/dev/uinput` and `/dev/uhid` to `0666` (host Sunshine still works; access is slightly broader than stock `0660`).
+
+#### 2. Input group (not needed for rootless)
+
+The rootless container does **not** need your user in the `input` group. `/dev/uinput` access comes from the udev rule and the logind ACL, and the container's `/dev/input` is built from device nodes the daemon binds, not from group membership.
+
+Being in the host `input` group is harmless by itself: rootless podman drops supplementary groups unless the container asks for them. You may stay in it for other uses, such as native host Sunshine.
+
+The only thing to avoid is `--group-add keep-groups` (or any other way of passing host groups into the container). That would expose the host `input` group to the container and, with it, host keyboards through the hidden host `/dev` bind.
+
+#### 3. Verify input isolation
+
+```bash
+python3 -I scripts/test-host-input-isolation.py [seconds]
+```
+
+Run it as your normal user, not with sudo; it needs write access to `/dev/uinput`. It creates a tagged and an untagged virtual keyboard, mouse, touchscreen and gamepad, then checks that host libinput (seat0) and SDL3 ignore the tagged devices and see the untagged ones. It exits 0 on PASS and 1 on FAIL. After changing the udev rules, rerun `scripts/install-host-udev-rules.sh` before the test.
+
+#### 4. GPU access
 
 Your user needs access to `/dev/dri/` devices (typically via the `video` and `render` groups):
 
@@ -226,24 +251,23 @@ Subsequent builds are faster due to Docker layer caching.
 
 ### Single instance
 
-Prefer `./run.sh` (or `./run.sh 1 57989` for a custom port range). Manual equivalent:
+Prefer `./run.sh` (or `./run.sh 1 57989` for a custom port range). `run.sh` runs **rootless** podman (no sudo) by default. `ENABLE_RYZENADJ=1` or `ROOTFUL=1` switches it to `sudo podman` with the legacy rootful flags (see Rootful vs Rootless). Manual rootless equivalent:
 
 ```bash
-# Check your hidraw major number: grep hidraw /proc/devices (commonly 241-243)
-HIDRAW_MAJOR=$(grep hidraw /proc/devices | awk '{print $1}')
-
-sudo podman run -d \
+podman run -d \
     --name sunshine \
     --systemd=true \
     --shm-size=1g \
+    --userns=keep-id:uid=1000,gid=1000 --user 0:0 \
     --cap-add SYS_ADMIN \
-    --cap-add MKNOD \
     --cap-add NET_ADMIN \
     --device /dev/dri \
     --device /dev/uinput \
-    --device-cgroup-rule='c 13:* rmw' \
-    --device-cgroup-rule="c ${HIDRAW_MAJOR}:* rmw" \
-    --tmpfs /dev/input:rw,dev,nosuid,size=1m \
+    --device /dev/uhid \
+    --device /dev/fuse \
+    --tmpfs /dev/input:rw,nosuid,size=1m \
+    --mount type=bind,src=/dev,dst=/run/gamehub-host/dev,ro=true \
+    -e HOST_DEV_DIR=/run/gamehub-host/dev \
     -v /sys:/sys:ro \
     -v sunshine-steam:/home/gamer/.steam \
     -v sunshine-local:/home/gamer/.local/share/Steam \
@@ -252,10 +276,22 @@ sudo podman run -d \
     -e CONTAINER_ID=sunshine-1 \
     -e SCREEN_WIDTH=1920 \
     -e SCREEN_HEIGHT=1080 \
-    --network=host \
+    -p 47984:47984/tcp \
+    -p 47989:47989/tcp \
+    -p 47990:47990/tcp \
+    -p 48010:48010/tcp \
+    -p 47998:47998/udp \
+    -p 47999:47999/udp \
+    -p 48000:48000/udp \
     --security-opt label=disable \
     gamehub-container:latest
 ```
+
+What the rootless flags do:
+- `--userns=keep-id:uid=1000,gid=1000` maps your host user to the container's `gamer` (uid/gid 1000), so the udev-assigned device ownership lines up inside the container. Container root keeps `CAP_SYS_ADMIN` in its own user namespace, so mounts still work. `--user 0:0` is required because keep-id otherwise starts the container process as uid 1000, and systemd (PID 1) exits immediately when not root.
+- The hidden `/dev` bind (`/run/gamehub-host/dev`) is how the daemon reaches host device nodes. It is a recursive read-only bind: rootless podman rejects `bind-nonrecursive=true` on `/dev` with EINVAL because its submounts are locked in the user namespace, so host `/dev` submounts also appear under it. That is acceptable because `/run/gamehub-host` is `0700` and only container root can enter it. It is not visible at `/dev`, and the `/dev/input` tmpfs is only populated with this container's tagged devices. Do not add `--group-add keep-groups` (see Host Setup).
+- Published ports (`-p`) replace `--network=host`. Rootless networking runs in a private network namespace, which is required for the daemon's synthetic udev events. Use 1:1 mappings (see Multiple instances).
+- No `--device-cgroup-rule` or `--cap-add MKNOD`. Device cgroup filtering does not apply rootless, and `mknod` is not needed.
 
 **Host data volume**: Mount shared storage only at a non-Steam path such as `/mnt/DATA`. Do **not** bind-mount under `/run/media/deck/...` (or `/run/media/<user>/...`). SteamOS/Steam treat that path as removable/external storage and will show the volume as an external drive. To use a Steam library on the host disk, mount at `/mnt/DATA` and add e.g. `/mnt/DATA/SteamLibrary` manually in Steam (via `libraryfolders.vdf`), not via the external-drive UI.
 
@@ -269,14 +305,15 @@ Each instance needs a unique `CONTAINER_ID`, unique Sunshine port range, and sep
 
 ```bash
 # Instance 1 — default ports (47984-48010)
-sudo podman run -d --name sunshine-1 \
+podman run -d --name sunshine-1 \
     --systemd=true \
     --shm-size=1g \
-    --cap-add SYS_ADMIN --cap-add MKNOD --cap-add NET_ADMIN \
-    --device /dev/dri --device /dev/uinput \
-    --device-cgroup-rule='c 13:* rmw' \
-    --device-cgroup-rule="c ${HIDRAW_MAJOR}:* rmw" \
-    --tmpfs /dev/input:rw,dev,nosuid,size=1m \
+    --userns=keep-id:uid=1000,gid=1000 --user 0:0 \
+    --cap-add SYS_ADMIN --cap-add NET_ADMIN \
+    --device /dev/dri --device /dev/uinput --device /dev/uhid --device /dev/fuse \
+    --tmpfs /dev/input:rw,nosuid,size=1m \
+    --mount type=bind,src=/dev,dst=/run/gamehub-host/dev,ro=true \
+    -e HOST_DEV_DIR=/run/gamehub-host/dev \
     -v /sys:/sys:ro \
     -v s1-steam:/home/gamer/.steam \
     -v s1-local:/home/gamer/.local/share/Steam \
@@ -285,20 +322,22 @@ sudo podman run -d --name sunshine-1 \
     -e CONTAINER_ID=sunshine-1 \
     -e SCREEN_WIDTH=1920 \
     -e SCREEN_HEIGHT=1080 \
-    --network=host \
+    -p 47984:47984/tcp -p 47989:47989/tcp -p 47990:47990/tcp -p 48010:48010/tcp \
+    -p 47998:47998/udp -p 47999:47999/udp -p 48000:48000/udp \
     --security-opt label=disable \
     gamehub-container:latest
 
 # Instance 2 — port range 57984-58010
 # SUNSHINE_PORT sets the base port via command line (no need to edit sunshine.conf)
-sudo podman run -d --name sunshine-2 \
+podman run -d --name sunshine-2 \
     --systemd=true \
     --shm-size=1g \
-    --cap-add SYS_ADMIN --cap-add MKNOD --cap-add NET_ADMIN \
-    --device /dev/dri --device /dev/uinput \
-    --device-cgroup-rule='c 13:* rmw' \
-    --device-cgroup-rule="c ${HIDRAW_MAJOR}:* rmw" \
-    --tmpfs /dev/input:rw,dev,nosuid,size=1m \
+    --userns=keep-id:uid=1000,gid=1000 --user 0:0 \
+    --cap-add SYS_ADMIN --cap-add NET_ADMIN \
+    --device /dev/dri --device /dev/uinput --device /dev/uhid --device /dev/fuse \
+    --tmpfs /dev/input:rw,nosuid,size=1m \
+    --mount type=bind,src=/dev,dst=/run/gamehub-host/dev,ro=true \
+    -e HOST_DEV_DIR=/run/gamehub-host/dev \
     -v /sys:/sys:ro \
     -v s2-steam:/home/gamer/.steam \
     -v s2-local:/home/gamer/.local/share/Steam \
@@ -330,6 +369,16 @@ podman compose up -d
 podman compose logs -f
 ```
 
+### Logs
+
+Rootless instances are read without sudo:
+
+```bash
+podman logs -f sunshine-1
+```
+
+Only instances started with `ENABLE_RYZENADJ=1` / `ROOTFUL=1` (under `sudo podman`) need `sudo` for `podman logs` / `podman exec`.
+
 ### First run
 
 1. Wait for Steam to finish bootstrapping (~1-2 minutes). A pre-cached bootstrap archive is included in the image. The gaming session may restart once during initial Steam setup — this is normal.
@@ -345,7 +394,7 @@ podman compose logs -f
 csrf_allowed_origins = https://192.168.x.x:57990
 
 # Restart Sunshine without restarting the container
-sudo podman exec -u gamer <container> bash -c \
+podman exec -u gamer <container> bash -c \
   'XDG_RUNTIME_DIR=/run/user/1000 systemctl --user restart sunshine.service'
 ```
 
@@ -363,11 +412,11 @@ Deck UI can look correct while a game has inverted/wrong face buttons if the gam
 
 ## Rootful vs Rootless Podman
 
-**Rootful podman (`sudo podman run`) is recommended** for multi-instance setups. The input isolation system requires `mknod` to create device nodes in the container's private `/dev/input/` tmpfs, and the Linux kernel blocks `mknod` for character devices in user namespaces — even with `--privileged`.
+**Rootless podman (the default for `./run.sh`) is recommended.** It needs no sudo and keeps input isolation between instances (with the caveat under Rootless limitations), using a hidden host `/dev` bind and the daemon's bind-mount path instead of `mknod`. Rootful podman is an opt-in fallback, needed only for RyzenAdj (and the KMS capture fallback).
 
 ### What works in rootless mode
 
-| Feature | Rootless | Rootful |
+| Feature | Rootless (default) | Rootful (`ENABLE_RYZENADJ=1` / `ROOTFUL=1`) |
 |---|---|---|
 | Gamescope scanout capture | Yes | Yes |
 | Vulkan/VAAPI encoding | Yes | Yes |
@@ -375,39 +424,27 @@ Deck UI can look correct while a game has inverted/wrong face buttons if the gam
 | Virtual mouse/keyboard (uinput) | Yes (with host udev rule) | Yes |
 | Virtual gamepad (uinput) | Yes (with host udev rule) | Yes |
 | PS5 DualSense (UHID) | Yes (with host udev rule) | Yes |
-| Input isolation (`/dev/input/` tmpfs) | **No** — `mknod` fails | Yes |
-| Multi-instance input isolation | **No** | Yes |
+| Input isolation (`/dev/input/` tmpfs) | Yes (bind-mounted host nodes) | Yes (`mknod`) |
+| Multi-instance input isolation | Yes (one host user, see limitations) | Yes |
+| RyzenAdj / TDP control | **No** | Yes |
+| KMS/DRM capture fallback | **No** | Yes |
+| Networking | Private netns, published ports | Host network allowed |
 
-### Rootless single-instance workaround
+### Rootful fallback
 
-True private `/dev/input` isolation still needs rootful podman (`mknod` of character devices is blocked in user namespaces). Rootless can still *use* virtual pads by bind-mounting host `/dev/input` and allowing the input/hidraw majors via `--device-cgroup-rule` — but then host devices are visible and multi-instance isolation is gone.
+`ENABLE_RYZENADJ=1` or `ROOTFUL=1` makes `run.sh` use `sudo podman run` with the legacy flags: `--cap-add MKNOD`, `--device-cgroup-rule` for the input and hidraw majors, `--tmpfs /dev/input:rw,dev,nosuid,size=1m`, and host networking where allowed. The daemon's `mknod()` fallback handles device nodes in this mode. Earlier rootful setups with `--network=host` broadcast the daemon's synthetic udev events into the host network namespace. Rootless mode avoids this by running in a private netns with published ports.
 
-For a single instance without isolation, run rootless with `--privileged` and WITHOUT the `/dev/input/` tmpfs. All host input devices will be visible inside the container, but the udev rule prevents the host from consuming container-created devices:
+### Rootless limitations
 
-```bash
-podman run -d \
-    --name sunshine \
-    --systemd=true \
-    --shm-size=1g \
-    --privileged \
-    --device /dev/dri \
-    --device /dev/uinput \
-    -v /sys:/sys:ro \
-    -e CONTAINER_ID=sunshine-1 \
-    -e SCREEN_WIDTH=1920 \
-    -e SCREEN_HEIGHT=1080 \
-    --network=host \
-    --security-opt label=disable \
-    gamehub-container:latest
-```
-
-`--privileged` in rootless Podman is **not the same as root** — you're still in a user namespace. It relaxes capability and device cgroup restrictions within that namespace.
+- **RyzenAdj** needs real `CAP_SYS_RAWIO` and `/dev/mem`, which rootless cannot grant. Use the rootful fallback above.
+- **KMS/DRM capture fallback** needs a real `CAP_SYS_ADMIN` on the host. Gamescope scanout capture (Wayland, DMA-BUF) works rootless and is the default.
+- **Single host user**: all instances run under one host user, so the udev ownership is the same for every container. Isolation protects against accidental cross-talk between instances and the host desktop, but not against a deliberately malicious container. Per-instance host users would be needed for that.
 
 ## Architecture
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  Container (rootful Podman recommended for multi-instance)    │
+│  Container (rootless Podman, --userns=keep-id)               │
 │                                                              │
 │  LD_PRELOAD=/usr/$LIB/libuinput_shim.so                      │
 │  CONTAINER_ID=sunshine-1                                     │
@@ -444,7 +481,7 @@ podman run -d \
 │  │  input-mknod-daemon (sidecar, polling 500ms)         │   │
 │  │  Polls /sys/class/input/ + /sys/class/hidraw/         │   │
 │  │  Match: phys=="container-*" OR UHID name in claims    │   │
-│  │    → mknod /dev/input/eventN, jsN, /dev/hidrawN       │   │
+│  │    → bind /dev/input/eventN, jsN, /dev/hidrawN        │   │
 │  │    → classify via ioctl(EVIOCGBIT)                    │   │
 │  │    → write /run/udev/data/cMAJ:MIN (fake udev DB)    │   │
 │  │    → send netlink udev "add" event (0xfeedcafe hdr)   │   │
@@ -472,13 +509,13 @@ Host kernel: device appears globally but tagged with
              name="Container ..." (UHID)
 
 Host udev:   ATTRS{phys}=="container-*" OR ATTRS{name}=="Container *" →
-             MODE=0600, ID_SEAT="seat9", LIBINPUT_IGNORE_DEVICE=1
+             OWNER/GROUP=<host user>, MODE=0600, ID_SEAT="seat9", LIBINPUT_IGNORE_DEVICE=1
              (hidden from HHD, logind, libinput, host desktop)
 ```
 
 ## Known Limitations
 
-- **Rootless podman + input isolation**: The kernel blocks `mknod` for character devices in user namespaces. The `input-mknod-daemon` cannot create `/dev/input/` device nodes in rootless mode. Use rootful podman (`sudo podman run`) for multi-instance input isolation. Rootless can still see virtual pads only by mounting host `/dev/input` (no isolation).
+- **Rootless podman requires the host udev rule**: Rootless device nodes are bind-mounted from the hidden host `/dev` (`HOST_DEV_DIR`), and their ownership comes from the host rule installed by `scripts/install-host-udev-rules.sh`. Without that rule the daemon waits (about 3 seconds) and then binds nodes the container user cannot open. Rootful `mknod()` fallback does not need the rule for ownership.
 - **HDR in games**: HDR is enabled at the compositor level via `GAMESCOPE_DISPLAY_SUPPORTS_HDR`, but games detect HDR through the patched EDID file (`GAMESCOPE_PATCHED_EDID_FILE`) and the `DXVK_HDR` environment variable. Both must be present in gamescope's environment — the container-env.conf systemd drop-in and environment.d/container.conf handle this.
 - **Port mapping and pairing**: Sunshine's internal ports must match external ports for Moonlight pairing to work. Use 1:1 port mapping (e.g., `-p 57989:57989`) and set `port = <HTTPS_PORT>` in sunshine.conf. NAT-style mapping (e.g., `57989:47989`) causes "certificate mismatch" errors during pairing.
 - **CSRF on remote Web UI**: Non-localhost origins need `csrf_allowed_origins` in `sunshine.conf` (see First run). `origin_web_ui_allowed = wan` alone is not enough for CSRF.
@@ -486,8 +523,8 @@ Host udev:   ATTRS{phys}=="container-*" OR ATTRS{name}=="Container *" →
 - **Host DATA as external drive**: Bind-mounting host storage under `/run/media/deck/...` makes SteamOS treat it as removable storage. Prefer `/mnt/DATA` only (see Running).
 - **Gamepad/hidraw hotplug**: The mknod daemon creates fake udev DB entries and sends synthetic netlink events (MurmurHash2 subsystem filter + `USEC_INITIALIZED`) for SDL/Steam gamepad discovery. Requires `CAP_NET_ADMIN` for the netlink socket.
 - **DualSense (DS5) + Steam Input dual pads**: DS5 is auto-selected when the client reports motion (`motion_as_ds4`) or touchpad (`touchpad_as_ds4`), or with `gamepad = ds5`. Requires `hid-playstation` on the host. UHID phys is not propagated to child sysfs nodes — the shim uses a claim file and `Container ` name prefix. Steam Input often creates a second Xbox 360 virtual pad on top; Deck UI uses Steam's pad, while some games bind the raw DS5 (or both), which can look like inverted face buttons. Use per-game Steam Input Forced On/Off, or force `gamepad = xone` if gyro is not needed (see Gamepad type and Steam Input).
-- **tmpfs /dev/input/ requires `dev` flag**: The `--tmpfs /dev/input:rw,dev,...` mount must include `dev` explicitly. Without it, podman defaults to `nodev` which blocks all character device access on the tmpfs, even with correct file permissions.
+- **tmpfs /dev/input/ and `dev` flag**: Rootless uses `--tmpfs /dev/input:rw,nosuid,size=1m` (no `dev`) and bind-mounts host nodes over placeholder files. The rootful fallback still needs `--tmpfs /dev/input:rw,dev,nosuid,size=1m`, because `mknod()` nodes on a `nodev` tmpfs are unusable.
 - **dup()/dup2() tracking**: If a process duplicates a uinput file descriptor, the shim loses tracking of the new fd. The mknod daemon still picks up the device via polling, but the `phys` field won't be tagged. This is uncommon in practice.
-- **Networking for multiple instances**: With `--network=host`, all instances share the host network. For multiple instances, use `SUNSHINE_PORT` env var and bridge networking with explicit 1:1 port mapping.
+- **Networking for multiple instances**: Rootless instances use a private network namespace with published ports. Each instance needs its own port range, set with `SUNSHINE_PORT` and 1:1 `-p` mappings. The rootful fallback may still use `--network=host`, in which case instances share the host network.
 - **Fedora version**: The Bazzite COPRs (Valve Mesa, PipeWire) target specific Fedora versions. If the COPR doesn't have builds for your Fedora version, the package installation will fail. Check COPR availability before changing `FEDORA_VERSION`.
 - **NVENC**: The NVENC encoder code is patched at build time to compile against newer nv-codec-headers. This is a no-op on AMD GPUs (NVENC runtime detection gracefully fails without an NVIDIA GPU).

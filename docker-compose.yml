@@ -1,14 +1,21 @@
-# Sunshine + Gamescope + Steam container
+# Sunshine + Gamescope + Steam container (rootless podman)
 #
 # Usage:
 #   podman compose up -d
 #   podman compose logs -f
 #
+# Rootless: networking is private (pasta), so ports are published instead of
+# using network_mode: host (synthetic udev netlink events are EPERM there).
+# Ports below are for the default base port 47989. For another base port, change
+# the host side of every mapping using the same offsets (see run.sh), or use run.sh.
+#
+# Rootful/RyzenAdj setups use run.sh (ENABLE_RYZENADJ=1 or ROOTFUL=1), not this file.
+#
 # First run: access Sunshine web UI at https://<host-ip>:47990
 # to set up credentials and pair with Moonlight.
 #
 # For multiple instances, duplicate the service with a unique
-# CONTAINER_ID and separate volume names.
+# CONTAINER_ID, separate volume names, and a different set of host ports.
 
 services:
   sunshine:
@@ -30,38 +37,67 @@ services:
     init: false
     stop_signal: SIGRTMIN+3
 
+    # Host user (uid/gid 1000) maps to in-container gamer (1000:1000)
+    userns_mode: "keep-id:uid=1000,gid=1000"
+    # keep-id also defaults the process user to 1000; systemd must be PID 1 as root.
+    user: "0:0"
+
     # GPU + input device passthrough
+    # Rootless: no device cgroup rules are needed (no cgroup device filtering).
     devices:
       - /dev/dri:/dev/dri              # AMD GPU (render + display)
       - /dev/uinput:/dev/uinput        # Virtual input creation
-      # - /dev/uhid:/dev/uhid           # Uncomment for PS5 DualSense
-    device_cgroup_rules:
-      - 'c 13:* rmw'                   # Input event devices (major 13)
-      - 'c 226:* rmw'                  # DRI render nodes (major 226)
+      - /dev/uhid:/dev/uhid            # PS5 DualSense / HID emulation
+      - /dev/fuse:/dev/fuse            # xdg-document-portal, AppImages
 
-    # Private /dev/input — the shim auto-populates with container's own devices
+    # Private /dev/input — the shim/daemon populates it with the container's own devices
+    # (no "dev" option: rootless tmpfs is nodev, nodes are bind-mounted instead)
     tmpfs:
       - /dev/input:rw,noexec,nosuid,size=1m
 
+    # Hidden host /dev, read-only. The daemon bind-mounts this container's
+    # tagged event/hidraw nodes from here (HOST_DEV_DIR) into /dev/input.
+    # NOTE: this bind is recursive in both run.sh and here, on purpose. Rootless
+    # crun rejects bind-nonrecursive for /dev (EINVAL: /dev has userns-locked
+    # submounts), so host /dev submounts (/dev/shm, /dev/pts, /dev/mqueue) also
+    # appear under the hidden dir. Acceptable because /run/gamehub-host is 0700
+    # and root-only, so gamer cannot reach them.
     volumes:
       - /sys:/sys:ro                   # sysfs for device discovery
+      - /dev:/run/gamehub-host/dev:ro   # hidden host /dev (parent dir is 0700, root-only)
       - steam-data:/home/gamer/.steam  # Persist Steam data
       - steam-local:/home/gamer/.local/share/Steam
       - sunshine-config:/home/gamer/.config/sunshine
 
-    # Host networking is simplest for game streaming
-    # (avoids UDP port range mapping and mDNS issues)
-    network_mode: host
+    # Published ports for base port 47989 (rootless: no host networking)
+    #   HTTPS/pairing  -5  47984/tcp
+    #   HTTP discovery  0  47989/tcp
+    #   Web UI         +1  47990/tcp
+    #   RTSP          +21  48010/tcp
+    #   Video          +9  47998/udp
+    #   Control       +10  47999/udp
+    #   Audio         +11  48000/udp
+    ports:
+      - "47984:47984/tcp"
+      - "47989:47989/tcp"
+      - "47990:47990/tcp"
+      - "48010:48010/tcp"
+      - "47998:47998/udp"
+      - "47999:47999/udp"
+      - "48000:48000/udp"
 
     environment:
       CONTAINER_ID: sunshine-1
+      # Hidden host /dev mount point (matches the volume above)
+      HOST_DEV_DIR: /run/gamehub-host/dev
       # Override to disable shim debug logging
       UINPUT_SHIM_DEBUG: "0"
 
-    # Capabilities needed for container operation
+    # Capabilities needed for container operation (rootless: namespaced)
+    # MKNOD is intentionally absent: rootless mknod() fails with EPERM.
     cap_add:
-      - SYS_ADMIN    # DRM access (fallback capture)
-      - MKNOD        # uinput shim creates /dev/input nodes
+      - SYS_ADMIN    # Mounts for input isolation, systemd; DRM fallback capture is not available rootless
+      - NET_ADMIN    # Networking inside the container's private netns
 
     security_opt:
       - label=disable  # SELinux: allow device access

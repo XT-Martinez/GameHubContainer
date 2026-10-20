@@ -14,8 +14,36 @@
  *   - Shim: tags phys on uinput and UHID devices (synchronous, at creation)
  *   - Daemon: creates /dev/ nodes + udev DB + netlink events (asynchronous)
  *
+ * Node creation has two modes:
+ *
+ *   Bind mode (rootless podman, HOST_DEV_DIR exists as a directory):
+ *     mknod() is not permitted in a rootless container, and tmpfs /dev is
+ *     nodev.  Instead, the host /dev is bind-mounted read-only at
+ *     HOST_DEV_DIR, and each node is an empty placeholder file that is
+ *     mount --bind'ed over the host node (e.g. /dev/input/event5 <-
+ *     /run/gamehub-host/dev/input/event5).  The host node is looked up at
+ *     HOST_DEV_DIR/gamehub-input/<kernel-name> first (host udev moves
+ *     container-tagged nodes there), then at its original location
+ *     (HOST_DEV_DIR/input/event5, or HOST_DEV_DIR/hidraw3 for hidraw) as a
+ *     fallback.  Host udev sets the owner asynchronously, so creation is
+ *     deferred until the chosen host node is owned by GAMER_UID (up to
+ *     DEFER_MAX polls, then proceeds with a warning).  Removal unmounts the
+ *     placeholder before unlinking it.  A bind mount pins the inode, so a
+ *     later host-side rename does not affect a node that is already bound.
+ *
+ *   Mknod mode (rootful, or HOST_DEV_DIR absent): plain mknod(2) of the
+ *     char device.  If a bind in bind mode fails, the daemon falls back to
+ *     mknod for that node.
+ *
  * Environment variables:
  *   UINPUT_SHIM_DEBUG   - set to "1" for verbose logging to stderr
+ *   HOST_DEV_DIR        - host /dev bind point (default /run/gamehub-host/dev);
+ *                         its presence as a directory selects bind mode.
+ *                         In bind mode its parent directory is chmod'ed 0700
+ *                         so non-root container processes cannot reach the
+ *                         host /dev bind (skipped for /, /run, /dev, /run/user)
+ *   GAMER_UID           - host uid that must own a host node before it is
+ *                         bound in bind mode (default 1000)
  *
  * Build:  gcc -O2 -o input-mknod-daemon input_mknod_daemon.c
  * Usage:  input-mknod-daemon  (runs in foreground, suitable for systemd)
@@ -31,9 +59,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/mount.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
+#include <sys/types.h>
 #include <linux/netlink.h>
 #include <arpa/inet.h>
 #include <time.h>
@@ -51,12 +81,21 @@
 /* UHID device name claims file (written by uinput shim) */
 #define UHID_NAMES_FILE "/run/container-input/uhid-names"
 
+/* Bind mode: host /dev bind point and default owner (see header comment) */
+#define HOST_DEV_DEFAULT  "/run/gamehub-host/dev"
+#define HOST_HIDDEN_DIR   "gamehub-input"   /* under HOST_DEV_DIR: host-moved nodes */
+#define GAMER_UID_DEFAULT 1000
+
 /* How long to wait for sysfs to populate */
 #define PHYS_RETRY_COUNT   20
 #define PHYS_RETRY_USEC    50000   /* 50ms per retry → 1s max */
 
 /* Poll interval in microseconds (500ms) */
 #define POLL_INTERVAL_USEC  500000
+
+/* Bind mode readiness: polls to wait for host udev ownership before proceeding */
+#define DEFER_MAX          6
+#define DEFER_SLOTS        64
 
 /* Netlink constants for synthetic udev events */
 #define NETLINK_KOBJECT_UEVENT  15
@@ -77,6 +116,12 @@ static int debug_enabled;
 
 #define ERR(fmt, ...) \
     fprintf(stderr, "[input-mknod] ERROR: " fmt "\n", ##__VA_ARGS__)
+
+/* ── Node placement settings (set once in main) ───────────── */
+
+static int bind_mode;                       /* 1 = bind placeholders, 0 = mknod */
+static char host_dev_dir[PATH_MAX] = HOST_DEV_DEFAULT;
+static unsigned int gamer_uid = GAMER_UID_DEFAULT;
 
 /* ── Udev netlink header ──────────────────────────────────── */
 
@@ -662,7 +707,203 @@ static void send_udev_event(const char *action, const char *devpath,
     }
 }
 
-/* ── Device node creation/removal ─────────────────────────── */
+/* ── Device node placement/removal ────────────────────────── */
+
+/*
+ * Bind-mode readiness deferral.  A device's host node is handed to GAMER_UID
+ * by host udev asynchronously, so bind mode waits (up to DEFER_MAX polls) for
+ * that before placing the node.  Entries exist only while a device is being
+ * deferred; they are dropped on success, on giving up, or when the device
+ * disappears from sysfs (defer_prune).
+ */
+struct defer_entry {
+    char name[32];
+    int hidraw;     /* 1 = hidraw family, 0 = input family */
+    int used;
+    int seen;       /* deferred during the current scan pass */
+    int count;      /* deferrals so far */
+};
+
+static struct defer_entry defer_tab[DEFER_SLOTS];
+
+static struct defer_entry *defer_lookup(const char *devname, int hidraw) {
+    for (int i = 0; i < DEFER_SLOTS; i++) {
+        struct defer_entry *e = &defer_tab[i];
+        if (e->used && e->hidraw == hidraw && strcmp(e->name, devname) == 0)
+            return e;
+    }
+    return NULL;
+}
+
+static struct defer_entry *defer_alloc(const char *devname, int hidraw) {
+    for (int i = 0; i < DEFER_SLOTS; i++) {
+        struct defer_entry *e = &defer_tab[i];
+        if (!e->used) {
+            snprintf(e->name, sizeof(e->name), "%s", devname);
+            e->hidraw = hidraw;
+            e->used = 1;
+            e->seen = 0;
+            e->count = 0;
+            return e;
+        }
+    }
+    return NULL;
+}
+
+/* End of a scan pass: free this family's entries not deferred in the pass */
+static void defer_prune(int hidraw) {
+    for (int i = 0; i < DEFER_SLOTS; i++) {
+        struct defer_entry *e = &defer_tab[i];
+        if (!e->used || e->hidraw != hidraw)
+            continue;
+        if (!e->seen) {
+            DBG("dropped deferred %s (gone)", e->name);
+            e->used = 0;
+        } else {
+            e->seen = 0;
+        }
+    }
+}
+
+/* Does host_path name a char device with rdev maj:min? */
+static int host_node_match(const char *host_path, unsigned int maj, unsigned int min) {
+    struct stat st;
+    return stat(host_path, &st) == 0 && S_ISCHR(st.st_mode) &&
+           st.st_rdev == makedev(maj, min);
+}
+
+/*
+ * Host node path for container device devname (maj:min).  Candidates, in
+ * lookup order:
+ *   HOST_DEV_DIR/gamehub-input/<devname>   (host udev moved the node here)
+ *   HOST_DEV_DIR/input/<devname>           (original location, input family)
+ *   HOST_DEV_DIR/<devname>                 (original location, hidraw family)
+ * Returns 1 if a candidate is a char device with rdev maj:min (out is that
+ * candidate).  Returns 0 if none matched: out is then the original location,
+ * so the ownership check and mknod fallback behave as before.  Returns -1 if
+ * a path would not fit in outsz.
+ */
+static int host_node_path(const char *devname, int hidraw,
+                          unsigned int maj, unsigned int min,
+                          char *out, size_t outsz) {
+    char hidden[PATH_MAX], orig[PATH_MAX];
+    int hn = snprintf(hidden, sizeof(hidden), "%s/" HOST_HIDDEN_DIR "/%s",
+                      host_dev_dir, devname);
+    int on;
+    if (hidraw)
+        on = snprintf(orig, sizeof(orig), "%s/%s", host_dev_dir, devname);
+    else
+        on = snprintf(orig, sizeof(orig), "%s/input/%s", host_dev_dir, devname);
+    if (hn < 0 || hn >= (int)sizeof(hidden) || on < 0 || on >= (int)sizeof(orig))
+        return -1;
+
+    if (host_node_match(hidden, maj, min)) {
+        if (snprintf(out, outsz, "%s", hidden) >= (int)outsz)
+            return -1;
+        return 1;
+    }
+    if (snprintf(out, outsz, "%s", orig) >= (int)outsz)
+        return -1;
+    return host_node_match(orig, maj, min);
+}
+
+/*
+ * Bind mode only: returns 1 if creation should wait for a later poll because
+ * the chosen host node is not yet owned by gamer_uid.  After DEFER_MAX
+ * deferrals the node is created anyway with a warning.  Always returns 0 in
+ * mknod mode.
+ */
+static int should_defer_node(const char *devname, int hidraw,
+                             unsigned int maj, unsigned int min) {
+    if (!bind_mode)
+        return 0;
+
+    char hostpath[PATH_MAX];
+    if (host_node_path(devname, hidraw, maj, min, hostpath, sizeof(hostpath)) < 0)
+        return 0;   /* cannot form the path; place_node falls back to mknod */
+    struct stat st;
+    int ready = (stat(hostpath, &st) == 0 && st.st_uid == gamer_uid);
+
+    struct defer_entry *e = defer_lookup(devname, hidraw);
+    if (ready) {
+        if (e)
+            e->used = 0;
+        return 0;
+    }
+
+    if (!e) {
+        e = defer_alloc(devname, hidraw);
+        if (!e) {
+            INFO("deferral table full, not waiting for %s", devname);
+            return 0;
+        }
+    }
+    e->seen = 1;
+
+    if (e->count < DEFER_MAX) {
+        e->count++;
+        DBG("deferring %s: %s not owned by uid %u (%d/%d)",
+            devname, hostpath, gamer_uid, e->count, DEFER_MAX);
+        return 1;
+    }
+
+    INFO("WARNING: %s: %s still not owned by uid %u after %d polls, creating anyway",
+         devname, hostpath, gamer_uid, DEFER_MAX);
+    e->used = 0;
+    return 0;
+}
+
+/*
+ * Place a node at nodepath for host device devname (maj:min).  Bind mode:
+ * create an empty placeholder and bind-mount the host node over it, where the
+ * host node is chosen by host_node_path (hidden dir first, then the original
+ * location) and must be a char device with the expected rdev.  On bind failure
+ * the placeholder is removed and mknod is tried.  Returns 0 on success, -1 on
+ * failure.
+ */
+static int place_node(const char *nodepath, const char *devname, int hidraw,
+                      unsigned int maj, unsigned int min) {
+    if (bind_mode) {
+        char hostpath[PATH_MAX];
+        if (host_node_path(devname, hidraw, maj, min, hostpath, sizeof(hostpath)) != 1) {
+            DBG("host node for %s missing or not char %u:%u, using mknod",
+                devname, maj, min);
+        } else {
+            int fd = open(nodepath, O_CREAT | O_WRONLY | O_CLOEXEC, 0644);
+            if (fd < 0) {
+                INFO("cannot create placeholder %s: %s, falling back to mknod",
+                     nodepath, strerror(errno));
+            } else {
+                close(fd);
+                if (mount(hostpath, nodepath, NULL, MS_BIND, NULL) == 0) {
+                    DBG("bound %s -> %s (%u:%u)", hostpath, nodepath, maj, min);
+                    return 0;
+                }
+                INFO("bind %s -> %s failed: %s, falling back to mknod",
+                     hostpath, nodepath, strerror(errno));
+                unlink(nodepath);
+            }
+        }
+    }
+
+    if (mknod(nodepath, S_IFCHR | 0666, makedev(maj, min)) != 0) {
+        DBG("mknod %s failed: %s", nodepath, strerror(errno));
+        return -1;
+    }
+    DBG("created %s (%u:%u)", nodepath, maj, min);
+    return 0;
+}
+
+/*
+ * Remove a node placed by place_node: unmount a bind placeholder (EINVAL if
+ * it is not a mount point, ENOENT if absent: both ignored), then unlink.
+ */
+static void drop_node(const char *nodepath) {
+    if (umount2(nodepath, MNT_DETACH) != 0 && errno != EINVAL && errno != ENOENT)
+        DBG("umount2 %s failed: %s", nodepath, strerror(errno));
+    if (unlink(nodepath) == 0)
+        DBG("removed %s", nodepath);
+}
 
 static void create_input_node(const char *devname) {
     unsigned int maj, min;
@@ -671,20 +912,20 @@ static void create_input_node(const char *devname) {
         return;
     }
 
+    if (should_defer_node(devname, 0, maj, min))
+        return;
+
     /* Ensure /dev/input/ exists */
     mkdir(DEV_INPUT, 0755);
 
     char nodepath[PATH_MAX];
     snprintf(nodepath, sizeof(nodepath), DEV_INPUT "/%s", devname);
 
-    /* Remove stale node if present */
-    unlink(nodepath);
+    /* Remove stale node or placeholder if present */
+    drop_node(nodepath);
 
-    if (mknod(nodepath, S_IFCHR | 0666, makedev(maj, min)) != 0) {
-        DBG("mknod %s failed: %s", nodepath, strerror(errno));
+    if (place_node(nodepath, devname, 0, maj, min) != 0)
         return;
-    }
-    DBG("created %s (%u:%u)", nodepath, maj, min);
 
     /* Classify device type for udev DB */
     enum device_class cls = DEV_CLASS_UNKNOWN;
@@ -718,8 +959,7 @@ static void remove_input_node(const char *devname) {
         min = minor(st.st_rdev);
     }
 
-    if (unlink(nodepath) == 0)
-        DBG("removed %s", nodepath);
+    drop_node(nodepath);
 
     /* Clean up udev DB entry */
     if (maj || min) {
@@ -741,16 +981,17 @@ static void create_hidraw_node(const char *devname) {
         return;
     }
 
+    if (should_defer_node(devname, 1, maj, min))
+        return;
+
     char nodepath[PATH_MAX];
     snprintf(nodepath, sizeof(nodepath), DEV_BASE "/%s", devname);
 
-    unlink(nodepath);
+    /* Remove stale node or placeholder if present */
+    drop_node(nodepath);
 
-    if (mknod(nodepath, S_IFCHR | 0666, makedev(maj, min)) != 0) {
-        DBG("mknod %s failed: %s", nodepath, strerror(errno));
+    if (place_node(nodepath, devname, 1, maj, min) != 0)
         return;
-    }
-    DBG("created %s (%u:%u)", nodepath, maj, min);
 
     /* Write udev DB for hidraw */
     write_udev_db(maj, min, DEV_CLASS_HIDRAW);
@@ -774,8 +1015,7 @@ static void remove_hidraw_node(const char *devname) {
         min = minor(st.st_rdev);
     }
 
-    if (unlink(nodepath) == 0)
-        DBG("removed %s", nodepath);
+    drop_node(nodepath);
 
     if (maj || min) {
         remove_udev_db(maj, min);
@@ -788,6 +1028,62 @@ static void remove_hidraw_node(const char *devname) {
 }
 
 /* ── Polling scan ────────────────────────────────────────── */
+
+/*
+ * Pass 2 staleness.  A node is stale if its sysfs entry is gone, the device
+ * is no longer container-owned (the number was reused by a host device), or
+ * the node's rdev no longer matches sysfs.  An unreadable sysfs dev file is
+ * treated as not stale (transient).
+ */
+static int node_rdev_mismatch(const char *sysfs_base, const char *devname,
+                              const char *nodepath) {
+    unsigned int maj, min;
+    if (!read_dev_numbers(sysfs_base, devname, &maj, &min))
+        return 0;
+    struct stat ns;
+    if (stat(nodepath, &ns) != 0)
+        return 0;
+    /* A placeholder whose bind mount was lost is a plain file: stale */
+    return !S_ISCHR(ns.st_mode) || ns.st_rdev != makedev(maj, min);
+}
+
+static int input_node_stale(const char *devname, const char *nodepath) {
+    char syspath[PATH_MAX];
+    snprintf(syspath, sizeof(syspath), SYSFS_INPUT "/%s", devname);
+    struct stat st;
+    if (stat(syspath, &st) != 0) {
+        DBG("stale device gone: %s", devname);
+        return 1;
+    }
+    if (!is_container_input(devname) && !is_uhid_claimed_input(devname)) {
+        DBG("%s no longer container-owned", devname);
+        return 1;
+    }
+    if (node_rdev_mismatch(SYSFS_INPUT, devname, nodepath)) {
+        DBG("%s rdev no longer matches sysfs", devname);
+        return 1;
+    }
+    return 0;
+}
+
+static int hidraw_node_stale(const char *devname, const char *nodepath) {
+    char syspath[PATH_MAX];
+    snprintf(syspath, sizeof(syspath), SYSFS_HIDRAW "/%s", devname);
+    struct stat st;
+    if (stat(syspath, &st) != 0) {
+        DBG("stale hidraw gone: %s", devname);
+        return 1;
+    }
+    if (!is_container_hidraw(devname) && !is_uhid_claimed_hidraw(devname)) {
+        DBG("hidraw %s no longer container-owned", devname);
+        return 1;
+    }
+    if (node_rdev_mismatch(SYSFS_HIDRAW, devname, nodepath)) {
+        DBG("hidraw %s rdev no longer matches sysfs", devname);
+        return 1;
+    }
+    return 0;
+}
 
 /*
  * Scan /sys/class/input/ and create/remove device nodes as needed.
@@ -824,6 +1120,7 @@ static int poll_and_sync_input(void) {
         create_input_node(ent->d_name);
     }
     closedir(d);
+    defer_prune(0);
 
     /* Pass 2: remove stale nodes whose sysfs entry is gone */
     d = opendir(DEV_INPUT);
@@ -832,14 +1129,10 @@ static int poll_and_sync_input(void) {
             if (!is_input_device(ent->d_name))
                 continue;
 
-            char syspath[PATH_MAX];
-            snprintf(syspath, sizeof(syspath),
-                     SYSFS_INPUT "/%s", ent->d_name);
-            struct stat st;
-            if (stat(syspath, &st) != 0) {
-                DBG("stale device gone: %s", ent->d_name);
+            char nodepath[PATH_MAX];
+            snprintf(nodepath, sizeof(nodepath), DEV_INPUT "/%s", ent->d_name);
+            if (input_node_stale(ent->d_name, nodepath))
                 remove_input_node(ent->d_name);
-            }
         }
         closedir(d);
     }
@@ -874,6 +1167,7 @@ static int poll_and_sync_hidraw(void) {
         create_hidraw_node(ent->d_name);
     }
     closedir(d);
+    defer_prune(1);
 
     /* Remove stale hidraw nodes — scan /dev for hidraw* and check sysfs */
     d = opendir(DEV_BASE);
@@ -882,14 +1176,10 @@ static int poll_and_sync_hidraw(void) {
             if (!is_hidraw_device(ent->d_name))
                 continue;
 
-            char syspath[PATH_MAX];
-            snprintf(syspath, sizeof(syspath),
-                     SYSFS_HIDRAW "/%s", ent->d_name);
-            struct stat st;
-            if (stat(syspath, &st) != 0) {
-                DBG("stale hidraw gone: %s", ent->d_name);
+            char nodepath[PATH_MAX];
+            snprintf(nodepath, sizeof(nodepath), DEV_BASE "/%s", ent->d_name);
+            if (hidraw_node_stale(ent->d_name, nodepath))
                 remove_hidraw_node(ent->d_name);
-            }
         }
         closedir(d);
     }
@@ -900,7 +1190,11 @@ static int poll_and_sync_hidraw(void) {
 /* ── Main loop ────────────────────────────────────────────── */
 
 int main(void) {
-    /* Clear umask so mknod(0666) creates world-readable nodes */
+    /*
+     * Clear umask so mknod(0666) creates world-readable nodes (mknod mode).
+     * Bind-mode placeholders are created 0644 and the bound node takes the
+     * host node's mode, so the umask does not affect bind mode.
+     */
     umask(0);
 
     const char *dbg = getenv("UINPUT_SHIM_DEBUG");
@@ -908,6 +1202,49 @@ int main(void) {
 
     INFO("starting — polling %s + %s for %s* devices",
          SYSFS_INPUT, SYSFS_HIDRAW, TAG_PREFIX);
+
+    /* Node placement mode: bind if HOST_DEV_DIR is a directory, else mknod */
+    const char *hd = getenv("HOST_DEV_DIR");
+    if (hd && hd[0])
+        snprintf(host_dev_dir, sizeof(host_dev_dir), "%s", hd);
+
+    const char *gu = getenv("GAMER_UID");
+    if (gu && gu[0]) {
+        char *end = NULL;
+        unsigned long v = strtoul(gu, &end, 10);
+        if (end && *end == '\0' && end != gu)
+            gamer_uid = (unsigned int)v;
+        else
+            INFO("ignoring invalid GAMER_UID=\"%s\", using %u", gu, gamer_uid);
+    }
+
+    struct stat hst;
+    bind_mode = (stat(host_dev_dir, &hst) == 0 && S_ISDIR(hst.st_mode));
+    INFO("node mode: %s (HOST_DEV_DIR=%s, GAMER_UID=%u)",
+         bind_mode ? "bind" : "mknod", host_dev_dir, gamer_uid);
+
+    if (bind_mode) {
+        /* Hide the host /dev bind from non-root: lock down its parent dir */
+        char parent[PATH_MAX];
+        snprintf(parent, sizeof(parent), "%s", host_dev_dir);
+        char *slash = strrchr(parent, '/');
+        if (!slash)
+            parent[0] = '\0';
+        else if (slash == parent)
+            parent[1] = '\0';
+        else
+            *slash = '\0';
+
+        if (parent[0] == '\0' || strcmp(parent, "/") == 0 ||
+            strcmp(parent, "/run") == 0 || strcmp(parent, "/dev") == 0 ||
+            strcmp(parent, "/run/user") == 0) {
+            INFO("not restricting %s (protected path, parent of HOST_DEV_DIR)", parent);
+        } else if (chmod(parent, 0700) == 0) {
+            INFO("chmod 0700 %s (hides HOST_DEV_DIR from non-root)", parent);
+        } else {
+            INFO("WARNING: chmod 0700 %s failed: %s", parent, strerror(errno));
+        }
+    }
 
     /* Prepare udev infrastructure */
     ensure_udev_dirs();

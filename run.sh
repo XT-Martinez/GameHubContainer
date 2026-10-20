@@ -1,21 +1,50 @@
 #!/bin/bash
 # Launch GameHubContainer instance
 # Usage: ./run.sh [instance-number] [sunshine-port]
-#   instance 1 uses default ports (47984-48010)
+#   instance 1 uses the default base port 47989 (ports 47984-48010)
 #   instance 2+ needs explicit sunshine port (e.g., 57989)
+#
+# Modes:
+#   default                   rootless podman (no sudo). Per-container input
+#                             isolation via the keep-id userns and a hidden
+#                             read-only host /dev bind. Always uses published
+#                             ports (never --network=host).
+#   ENABLE_RYZENADJ=1 or      rootful legacy mode (sudo podman). Required for
+#   ROOTFUL=1                 RyzenAdj (/dev/mem). Host networking when no port
+#                             is given; daemon falls back to mknod.
 
 set -euo pipefail
 
 INSTANCE="${1:-1}"
 PORT="${2:-}"
 NAME="sunshine-${INSTANCE}"
-HIDRAW_MAJOR=$(grep hidraw /proc/devices | awk '{print $1}')
 SUNSHINE_MAC_ADDRESS="${SUNSHINE_MAC_ADDRESS:-$(printf '%s' "${NAME}" | md5sum | sed 's/^\(..\)\(..\)\(..\)\(..\)\(..\).*$/02:\1:\2:\3:\4:\5/')}"
 HOST_DATA_PATH="${HOST_DATA_PATH:-/var/mnt/DATA}"
 IMAGE="${IMAGE:-gamehub-container:latest}"
 GS_ENABLE_CTRL_12="${GS_ENABLE_CTRL_12:-0}"
 ENABLE_RYZENADJ="${ENABLE_RYZENADJ:-0}"
+ROOTFUL="${ROOTFUL:-0}"
 RYZENADJ_PCI_CONFIG="${RYZENADJ_PCI_CONFIG:-/sys/bus/pci/devices/0000:00:00.0/config}"
+
+if [[ "${ENABLE_RYZENADJ}" == "1" || "${ROOTFUL}" == "1" ]]; then
+    ROOTFUL_MODE=1
+    PODMAN=(sudo podman)
+    MODE_LABEL="rootful legacy (sudo podman)"
+else
+    ROOTFUL_MODE=0
+    PODMAN=(podman)
+    MODE_LABEL="rootless (podman, keep-id userns)"
+fi
+
+# Rootful only: the hidraw major is needed for the cgroup device rule.
+# Rootless has no device cgroup filtering, so it is not looked up there.
+HIDRAW_MAJOR=""
+if [[ "${ROOTFUL_MODE}" == "1" ]]; then
+    HIDRAW_MAJOR=$(awk '$2 == "hidraw" { print $1; exit }' /proc/devices 2>/dev/null || true)
+    if [[ -z "${HIDRAW_MAJOR}" ]]; then
+        echo "WARNING: no hidraw major in /proc/devices; skipping hidraw cgroup rule" >&2
+    fi
+fi
 
 if [[ ! -d "${HOST_DATA_PATH}" ]]; then
     echo "ERROR: HOST_DATA_PATH does not exist: ${HOST_DATA_PATH}" >&2
@@ -23,12 +52,30 @@ if [[ ! -d "${HOST_DATA_PATH}" ]]; then
 fi
 
 echo "Container Name: $NAME"
+echo "Mode: ${MODE_LABEL}"
 echo "Image: ${IMAGE}"
 echo "Resolution: ${SCREEN_WIDTH:-1920}x${SCREEN_HEIGHT:-1080}"
 echo "Sunshine MAC: ${SUNSHINE_MAC_ADDRESS}"
 echo "Host data: ${HOST_DATA_PATH} -> /mnt/DATA"
 echo "Steam Ctrl+1/2 shortcuts: ${GS_ENABLE_CTRL_12}"
 echo "RyzenAdj TDP access: ${ENABLE_RYZENADJ}"
+
+# Rootless and rootful podman keep separate image stores.
+if ! "${PODMAN[@]}" image exists "${IMAGE}"; then
+    echo "ERROR: image ${IMAGE} not found in the ${PODMAN[*]} store; build it with: ${PODMAN[*]} build -t ${IMAGE} ." >&2
+    exit 1
+fi
+
+# Rootless preflight: the shim/daemon need to open these host nodes read-write
+# as the current user. Warn only; the container still starts.
+if [[ "${ROOTFUL_MODE}" == "0" ]]; then
+    for dev in /dev/uinput /dev/uhid; do
+        if [[ ! -r "${dev}" || ! -w "${dev}" ]]; then
+            echo "WARNING: ${dev} is not read-writable by $(id -un); input devices may not work." >&2
+            echo "  Install the host udev rules: scripts/install-host-udev-rules.sh" >&2
+        fi
+    done
+fi
 
 RYZENADJ_ARGS=()
 if [[ "${ENABLE_RYZENADJ}" == "1" ]]; then
@@ -48,7 +95,44 @@ if [[ "${ENABLE_RYZENADJ}" == "1" ]]; then
     )
 fi
 
+# Mode-specific runtime args
+if [[ "${ROOTFUL_MODE}" == "1" ]]; then
+    MODE_ARGS=(
+        --cap-add SYS_ADMIN --cap-add MKNOD --cap-add NET_ADMIN
+        # rtkit (realtime audio scheduling) needs these; only effective rootful
+        --cap-add SYS_NICE --cap-add DAC_READ_SEARCH --cap-add SYS_PTRACE
+        --device /dev/dri --device /dev/uinput --device /dev/uhid --device /dev/fuse
+        --device-cgroup-rule='c 13:* rmw'
+        --tmpfs /dev/input:rw,dev,nosuid,size=1m
+    )
+    if [[ -n "${HIDRAW_MAJOR}" ]]; then
+        MODE_ARGS+=(--device-cgroup-rule="c ${HIDRAW_MAJOR}:* rmw")
+    fi
+else
+    MODE_ARGS=(
+        # Map host user (uid/gid 1000) to in-container gamer (1000:1000).
+        --userns=keep-id:uid=1000,gid=1000
+        # keep-id also defaults the process user to 1000; systemd must be PID 1 as root.
+        --user 0:0
+        --cap-add SYS_ADMIN --cap-add NET_ADMIN
+        --device /dev/dri --device /dev/uinput --device /dev/uhid --device /dev/fuse
+        --tmpfs /dev/input:rw,nosuid,size=1m
+        # Hidden host /dev under /run/gamehub-host (parent is 0700, so gamer cannot traverse it).
+        # Recursive bind on purpose: rootless crun rejects bind-nonrecursive here (EINVAL,
+        # /dev has userns-locked submounts), so /dev submounts also appear under the hidden dir.
+        # The daemon bind-mounts host event/hidraw nodes from here
+        # into its private /dev/input, so no mknod (and no device cgroup rules) is needed.
+        --mount "type=bind,src=/dev,dst=/run/gamehub-host/dev,ro=true"
+        -e HOST_DEV_DIR=/run/gamehub-host/dev
+    )
+fi
+
 # Build port args
+# Rootless always publishes ports (private netns), defaulting to base port 47989.
+if [[ "${ROOTFUL_MODE}" == "0" && -z "$PORT" ]]; then
+    PORT=47989
+fi
+
 PORT_ARGS=()
 if [[ -n "$PORT" ]]; then
     # Sunshine port offsets from the base port (config.port):
@@ -77,24 +161,20 @@ if [[ -n "$PORT" ]]; then
         -p "${P_AUDIO}:${P_AUDIO}/udp"
     )
 else
-    # Default ports — use host networking
+    # Rootful only: default ports use host networking
     PORT_ARGS=(--network=host)
 fi
 
-echo "Starting ${NAME} (hidraw major=${HIDRAW_MAJOR})"
-[[ -n "$PORT" ]] && echo "  Sunshine port: ${PORT}" || echo "  Sunshine port: default (47989)"
+echo "Starting ${NAME} (${MODE_LABEL})"
+[[ -n "$PORT" ]] && echo "  Sunshine port: ${PORT}" || echo "  Sunshine port: default (host network)"
 
-sudo podman run -d --rm \
+"${PODMAN[@]}" run -d --rm \
     --name "${NAME}" \
     --hostname "${NAME}" \
     --replace \
     --systemd=true \
     --shm-size=1g \
-    --cap-add SYS_ADMIN --cap-add MKNOD --cap-add NET_ADMIN \
-    --device /dev/dri --device /dev/uinput --device /dev/uhid \
-    --device-cgroup-rule='c 13:* rmw' \
-    --device-cgroup-rule="c ${HIDRAW_MAJOR}:* rmw" \
-    --tmpfs /dev/input:rw,dev,nosuid,size=1m \
+    "${MODE_ARGS[@]}" \
     -v /sys:/sys:ro \
     "${RYZENADJ_ARGS[@]}" \
     -v "${NAME}-home:/home/gamer/" \
@@ -133,5 +213,5 @@ start_mdns_publisher() {
 start_mdns_publisher
 
 echo "${NAME} started (mDNS: ${NAME}/_nvstream._tcp:${MDNS_PORT})"
-echo "Logs: sudo podman exec -u gamer ${NAME} bash -c 'XDG_RUNTIME_DIR=/run/user/1000 journalctl --user -f'"
-sudo podman exec -u gamer ${NAME} bash -c 'XDG_RUNTIME_DIR=/run/user/1000 journalctl --user -f'
+echo "Logs: ${PODMAN[*]} exec -u gamer ${NAME} bash -c 'XDG_RUNTIME_DIR=/run/user/1000 journalctl --user -f'"
+"${PODMAN[@]}" exec -u gamer "${NAME}" bash -c 'XDG_RUNTIME_DIR=/run/user/1000 journalctl --user -f'

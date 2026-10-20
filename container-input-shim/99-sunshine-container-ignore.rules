@@ -1,8 +1,21 @@
 # Isolate virtual input devices created inside containers from the host desktop.
 #
+# Install with scripts/install-host-udev-rules.sh, which copies this file to
+# /etc/udev/rules.d/ and installs the node-hiding helper with the target host
+# user and its subuid/subgid values filled in.
+#
 # The LD_PRELOAD shim (libuinput_shim.so) tags every uinput/UHID device
 # with phys="container-<CONTAINER_ID>".  These rules assign container devices
-# to a non-existent seat (seat9) and remove group-read permission.
+# to a non-existent seat (seat9), remove group-read permission, and hand the
+# nodes to the host user that runs the rootless container.
+#
+# OWNER/GROUP are root:root while a tagged node is still at its public path. The
+# host user is in the input group, so the stock group rule would leave event*
+# readable by it. Root ownership with mode 0600 closes that window, including
+# the moment before the helper moves the node. The helper then moves the node
+# into the 0700 hidden dir and chowns it to the host user with mode 0600. The
+# rootless container, which runs as that host user, opens it there through its
+# bind mount.
 #
 # MODE=0600 is critical: HHD (Handheld Daemon) voluntarily skips devices
 # without group-read (checks st_mode & S_IRGRP), which is the only way to
@@ -12,8 +25,18 @@
 # For UHID devices (DualSense/DS5), the kernel doesn't propagate the phys
 # field to sysfs, so we match by device name instead.
 #
-# Install: sudo cp 99-sunshine-container-ignore.rules /etc/udev/rules.d/
-#          sudo udevadm control --reload-rules && sudo udevadm trigger
+# PATH HIDING: OWNER/GROUP alone are not enough, because host programs running
+# as the same host user (Steam, SDL games, browsers) could open container gamepads
+# at /dev/input/eventN, /dev/input/jsN and /dev/hidrawN. The RUN+= lines below
+# move each tagged node into /dev/gamehub-input via
+# /usr/local/libexec/gamehub-hide-input-node. That directory is owned by the host
+# subuid that container root maps to, with mode 0700. The host user therefore gets
+# EACCES when opening a hidden node, and udev-based enumerators get ENOENT for the
+# old path. The container reaches the nodes through its bind mount. The remove
+# rule at the end deletes the hidden node when the device goes away.
+#
+# Install: scripts/install-host-udev-rules.sh [host-user]
+#          (replaces the old manual cp; it substitutes the placeholders below)
 
 # Allow containers to create virtual input devices.
 # In rootless podman, device permissions cannot be changed inside the container
@@ -24,9 +47,10 @@ KERNEL=="uhid", SUBSYSTEM=="misc", MODE="0666"
 
 # ── uinput devices (phys-tagged by our shim) ─────────────────
 # Match event/js nodes via parent phys (ATTRS with S), strip group-read
-# to hide from HHD, and assign to non-existent seat9.
-SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{phys}=="container-*", MODE="0600", ENV{ID_SEAT}="seat9", ENV{LIBINPUT_IGNORE_DEVICE}="1"
-KERNEL=="hidraw*", ATTRS{phys}=="container-*", MODE="0600", ENV{ID_SEAT}="seat9"
+# to hide from HHD, assign to non-existent seat9, and keep them root-owned
+# (the helper below hands them to the host user after hiding them).
+SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{phys}=="container-*", OWNER="root", GROUP="root", MODE="0600", ENV{ID_SEAT}="seat9", ENV{LIBINPUT_IGNORE_DEVICE}="1"
+KERNEL=="hidraw*", ATTRS{phys}=="container-*", OWNER="root", GROUP="root", MODE="0600", ENV{ID_SEAT}="seat9"
 
 # ── UHID devices (kernel doesn't propagate phys, match by name) ──
 # The shim prefixes UHID device names with "Container " so we can
@@ -35,5 +59,23 @@ KERNEL=="hidraw*", ATTRS{phys}=="container-*", MODE="0600", ENV{ID_SEAT}="seat9"
 # For input nodes, ATTRS{name} traverses to the parent inputN device (has name file).
 # For hidraw nodes, the parent HID device has no 'name' sysfs file — only HID_NAME
 # in uevent — so we use PROGRAM to grep the parent's uevent instead.
-SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{name}=="Container *", MODE="0600", ENV{ID_SEAT}="seat9", ENV{LIBINPUT_IGNORE_DEVICE}="1"
-SUBSYSTEM=="hidraw", PROGRAM="/bin/grep -qm1 HID_NAME=Container %S%p/device/uevent", MODE="0600", ENV{ID_SEAT}="seat9", RUN+="/bin/chmod 0600 /dev/%k"
+# The node stays root:root 0600 until the hide helper (below) moves it into the
+# hidden dir and hands it to the host user. No chmod/chown RUN is needed here.
+SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{name}=="Container *", OWNER="root", GROUP="root", MODE="0600", ENV{ID_SEAT}="seat9", ENV{LIBINPUT_IGNORE_DEVICE}="1"
+SUBSYSTEM=="hidraw", PROGRAM="/bin/grep -qm1 HID_NAME=Container %S%p/device/uevent", OWNER="root", GROUP="root", MODE="0600", ENV{ID_SEAT}="seat9"
+
+# ── Hide tagged nodes from host user processes (see PATH HIDING above) ──
+# These rules repeat the match conditions of the rules above. The helper moves
+# the node from its public path (/dev/input or /dev/) into /dev/gamehub-input,
+# then chowns it to the host user with mode 0600. Once moved, /dev/%k no longer
+# exists. A later change event finds nothing to move and only re-applies the
+# owner and mode to the hidden node.
+ACTION=="add|change", SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{phys}=="container-*", RUN+="/usr/local/libexec/gamehub-hide-input-node add %k $devnode"
+ACTION=="add|change", KERNEL=="hidraw*", ATTRS{phys}=="container-*", RUN+="/usr/local/libexec/gamehub-hide-input-node add %k $devnode"
+ACTION=="add|change", SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{name}=="Container *", RUN+="/usr/local/libexec/gamehub-hide-input-node add %k $devnode"
+ACTION=="add|change", SUBSYSTEM=="hidraw", PROGRAM="/bin/grep -qm1 HID_NAME=Container %S%p/device/uevent", RUN+="/usr/local/libexec/gamehub-hide-input-node add %k $devnode"
+
+# On remove, the parent attributes are often gone, so match by kernel name only.
+# The helper deletes only /dev/gamehub-input/<kernel-name>. It is a no-op for
+# host devices, whose nodes are never in that directory.
+ACTION=="remove", SUBSYSTEM=="input|hidraw", KERNEL=="event*|js*|hidraw*", RUN+="/usr/local/libexec/gamehub-hide-input-node remove %k"
