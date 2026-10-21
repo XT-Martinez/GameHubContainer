@@ -24,6 +24,14 @@ IMAGE="${IMAGE:-gamehub-container:latest}"
 GS_ENABLE_CTRL_12="${GS_ENABLE_CTRL_12:-0}"
 ENABLE_RYZENADJ="${ENABLE_RYZENADJ:-0}"
 ROOTFUL="${ROOTFUL:-0}"
+# Sunshine web UI CSRF origins: the host's LAN addresses and hostname, so the UI
+# works from other machines. Override with SUNSHINE_CSRF_ORIGINS (comma-separated https:// origins).
+if [[ -z "${SUNSHINE_CSRF_ORIGINS:-}" ]]; then
+    SUNSHINE_CSRF_ORIGINS="$({
+        ip -4 -o addr show scope global 2>/dev/null | awk '{sub(/\/.*/, "", $4); print "https://" $4}'
+        hostname 2>/dev/null | sed '/./s|^|https://|'
+    } | paste -sd, -)"
+fi
 RYZENADJ_PCI_CONFIG="${RYZENADJ_PCI_CONFIG:-/sys/bus/pci/devices/0000:00:00.0/config}"
 
 if [[ "${ENABLE_RYZENADJ}" == "1" || "${ROOTFUL}" == "1" ]]; then
@@ -58,6 +66,7 @@ echo "Resolution: ${SCREEN_WIDTH:-1920}x${SCREEN_HEIGHT:-1080}"
 echo "Sunshine MAC: ${SUNSHINE_MAC_ADDRESS}"
 echo "Host data: ${HOST_DATA_PATH} -> /mnt/DATA"
 echo "Steam Ctrl+1/2 shortcuts: ${GS_ENABLE_CTRL_12}"
+echo "Web UI origins: ${SUNSHINE_CSRF_ORIGINS:-none}"
 echo "RyzenAdj TDP access: ${ENABLE_RYZENADJ}"
 
 # Rootless and rootful podman keep separate image stores.
@@ -182,6 +191,7 @@ echo "Starting ${NAME} (${MODE_LABEL})"
     -e "CONTAINER_ID=${NAME}" \
     -e "SUNSHINE_MAC_ADDRESS=${SUNSHINE_MAC_ADDRESS}" \
     -e "GS_ENABLE_CTRL_12=${GS_ENABLE_CTRL_12}" \
+    -e "SUNSHINE_CSRF_ORIGINS=${SUNSHINE_CSRF_ORIGINS}" \
     -e SCREEN_WIDTH="${SCREEN_WIDTH:-1920}" \
     -e SCREEN_HEIGHT="${SCREEN_HEIGHT:-1080}" \
     "${PORT_ARGS[@]}" \

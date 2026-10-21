@@ -387,11 +387,13 @@ Only instances started with `ENABLE_RYZENADJ=1` / `ROOTFUL=1` (under `sudo podma
 4. For multi-instance setups: set `SUNSHINE_PORT` env var to match the external port mapping (or set `port` in the Sunshine web UI under Configuration > Network)
 5. Pair with Moonlight on your client device
 
-**Remote Web UI / CSRF**: Opening the UI from a non-localhost origin (e.g. `https://192.168.x.x:57990`) can be blocked by CSRF protection. Add that exact origin to Sunshine config and restart Sunshine only:
+**Remote Web UI / CSRF**: Opening the UI from a non-localhost origin (e.g. `https://192.168.x.x:57990`) is blocked by CSRF protection unless the origin is in `csrf_allowed_origins`. `run.sh` does this for you: it passes the host's IPv4 addresses and hostname as `SUNSHINE_CSRF_ORIGINS`, and the container writes them into `sunshine.conf` on each Sunshine start. Origins are matched by prefix, so no port is needed. Set `SUNSHINE_CSRF_ORIGINS` (comma-separated `https://` origins) to override; when it is empty the config is left alone.
+
+To set it by hand instead (for example with `docker-compose.yml`), edit the config and restart Sunshine only:
 
 ```bash
 # In ~/.config/sunshine/sunshine.conf inside the container
-csrf_allowed_origins = https://192.168.x.x:57990
+csrf_allowed_origins = https://192.168.x.x
 
 # Restart Sunshine without restarting the container
 podman exec -u gamer <container> bash -c \
@@ -412,7 +414,7 @@ Deck UI can look correct while a game has inverted/wrong face buttons if the gam
 
 ## Rootful vs Rootless Podman
 
-**Rootless podman (the default for `./run.sh`) is recommended.** It needs no sudo and keeps input isolation between instances (with the caveat under Rootless limitations), using a hidden host `/dev` bind and the daemon's bind-mount path instead of `mknod`. Rootful podman is an opt-in fallback, needed only for RyzenAdj (and the KMS capture fallback).
+**Rootless podman (the default for `./run.sh`) is recommended.** It needs no sudo and keeps input isolation between instances (with the caveat under Rootless limitations), using a hidden host `/dev` bind and the daemon's bind-mount path instead of `mknod`. Rootful podman is an opt-in fallback, needed only for RyzenAdj.
 
 ### What works in rootless mode
 
@@ -427,7 +429,6 @@ Deck UI can look correct while a game has inverted/wrong face buttons if the gam
 | Input isolation (`/dev/input/` tmpfs) | Yes (bind-mounted host nodes) | Yes (`mknod`) |
 | Multi-instance input isolation | Yes (one host user, see limitations) | Yes |
 | RyzenAdj / TDP control | **No** | Yes |
-| KMS/DRM capture fallback | **No** | Yes |
 | Networking | Private netns, published ports | Host network allowed |
 
 ### Rootful fallback
@@ -437,7 +438,7 @@ Deck UI can look correct while a game has inverted/wrong face buttons if the gam
 ### Rootless limitations
 
 - **RyzenAdj** needs real `CAP_SYS_RAWIO` and `/dev/mem`, which rootless cannot grant. Use the rootful fallback above.
-- **KMS/DRM capture fallback** needs a real `CAP_SYS_ADMIN` on the host. Gamescope scanout capture (Wayland, DMA-BUF) works rootless and is the default.
+- **No KMS/DRM capture.** The image uses gamescope scanout capture (Wayland, DMA-BUF) only. Sunshine gets no file capabilities, because they would stop the input shim from loading (see the Dockerfile).
 - **Single host user**: all instances run under one host user, so the udev ownership is the same for every container. Isolation protects against accidental cross-talk between instances and the host desktop, but not against a deliberately malicious container. Per-instance host users would be needed for that.
 
 ## Architecture

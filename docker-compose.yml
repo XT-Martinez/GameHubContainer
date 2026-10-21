@@ -90,6 +90,8 @@ services:
       CONTAINER_ID: sunshine-1
       # Hidden host /dev mount point (matches the volume above)
       HOST_DEV_DIR: /run/gamehub-host/dev
+      # Web UI origins allowed by CSRF protection (comma-separated, prefix match, any port)
+      # SUNSHINE_CSRF_ORIGINS: https://192.168.1.50
       # Override to disable shim debug logging
       UINPUT_SHIM_DEBUG: "0"
 

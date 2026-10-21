@@ -14,6 +14,7 @@ Type=simple
 TimeoutStartSec=90
 ExecStartPre=/usr/local/bin/wait-for-wayland.sh
 ExecStartPre=/bin/bash -c 'test -f %h/.config/sunshine/sunshine.conf || (mkdir -p %h/.config/sunshine && cp /etc/sunshine/sunshine.conf.default %h/.config/sunshine/sunshine.conf)'
+ExecStartPre=/usr/local/bin/set-csrf-origins.sh
 ExecStart=/bin/bash -c 'exec /usr/bin/sunshine ${SUNSHINE_PORT:+port=$SUNSHINE_PORT}'
 Restart=on-failure
 RestartSec=5
