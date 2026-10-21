@@ -60,7 +60,8 @@ sudo modprobe uhid && echo uhid | sudo tee /etc/modules-load.d/uhid.conf && sudo
 
 - Rootless cannot do realtime scheduling; `rtkit-daemon` is skipped
   (`ConditionCapability=CAP_SYS_NICE`).
-- KMS/DRM capture fallback and RyzenAdj need rootful mode.
+- RyzenAdj needs rootful mode. KMS capture is not used (gamescope scanout
+  capture only), so Sunshine has no file caps.
 - All instances run as one host user, so isolation protects against accidental
   cross-talk, not a deliberately malicious container.
 - Sunshine logs "Failed to create client: Daemon not running" (no Avahi in the

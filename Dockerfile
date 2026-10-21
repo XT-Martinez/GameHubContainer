@@ -31,7 +31,7 @@ FROM fedora:${FEDORA_VERSION} AS base
 
 RUN printf '%s\n' \
     'fastestmirror=True' \
-    'max_parallel_downloads=10' \
+    'max_parallel_downloads=20' \
     'defaultyes=True' >> /etc/dnf/dnf.conf
 
 # ============================================================
@@ -144,7 +144,7 @@ ARG GAMER_UID=1000
 
 RUN printf '%s\n' \
     'fastestmirror=True' \
-    'max_parallel_downloads=10' \
+    'max_parallel_downloads=20' \
     'defaultyes=True' >> /etc/dnf/dnf.conf
 
 # ── Repository setup ──────────────────────────────────────────
@@ -158,9 +158,14 @@ RUN --mount=type=cache,dst=/var/cache/libdnf5 \
     dnf5 -y install --nogpgcheck \
         --repofrompath 'terra,https://repos.fyralabs.com/terra$releasever' \
         terra-release terra-release-extras && \
-    dnf5 -y install \
-        https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm \
-        https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-$(rpm -E %fedora).noarch.rpm && \
+    # mirrors.rpmfusion.org redirects to a random mirror with no retry; fall back
+    # to a fixed mirror when the redirect target is unreachable.
+    for base in https://mirrors.rpmfusion.org https://mirror.math.princeton.edu/pub/rpmfusion; do \
+        dnf5 -y install \
+            $base/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm \
+            $base/nonfree/fedora/rpmfusion-nonfree-release-$(rpm -E %fedora).noarch.rpm && break; \
+    done && \
+    rpm -q rpmfusion-free-release rpmfusion-nonfree-release && \
     dnf5 -y config-manager setopt \
         "*bazzite*".priority=1 \
         "*terra*".priority=3 \
@@ -409,8 +414,12 @@ RUN mkdir -p /etc/systemd/user/default.target.wants && \
     ln -sf /etc/systemd/user/sunshine.service \
         /etc/systemd/user/default.target.wants/sunshine.service
 
-# Sunshine needs CAP_SYS_ADMIN for DRM capture fallback
-RUN setcap 'cap_sys_admin+p' /usr/bin/sunshine || true
+# Do NOT give /usr/bin/sunshine file capabilities (setcap). A binary with file
+# caps runs in secure-exec mode, where glibc ignores LD_PRELOAD paths containing
+# a slash, so libuinput_shim.so would not load: Sunshine's virtual keyboard, mouse,
+# touch and pen devices would then be untagged, visible to the host desktop and
+# never bound into the container's /dev/input. The caps were only for KMS capture,
+# which this image does not use (gamescope scanout capture needs no privileges).
 
 # ── systemd container tuning ─────────────────────────────────
 
