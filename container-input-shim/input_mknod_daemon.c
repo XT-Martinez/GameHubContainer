@@ -96,6 +96,7 @@
 /* Bind mode readiness: polls to wait for host udev ownership before proceeding */
 #define DEFER_MAX          6
 #define DEFER_SLOTS        64
+#define NODE_SLOTS         128
 
 /* Netlink constants for synthetic udev events */
 #define NETLINK_KOBJECT_UEVENT  15
@@ -765,6 +766,86 @@ static void defer_prune(int hidraw) {
     }
 }
 
+/*
+ * Devpath of each placed node, recorded when the node is created.  A device
+ * destroyed and recreated between two polls usually gets the same devname
+ * and maj:min (the kernel reuses the lowest free minor) but a new parent
+ * (inputN), so a changed devpath is how pass 2 detects it.  The recorded
+ * devpath is also what remove events carry: libinput matches removals by
+ * syspath.  Nodes found without an entry (e.g. after a daemon restart) are
+ * adopted with their current devpath.
+ */
+struct node_entry {
+    char name[32];
+    int hidraw;
+    int used;
+    char devpath[256];
+};
+
+static struct node_entry node_tab[NODE_SLOTS];
+
+static struct node_entry *node_lookup(const char *devname, int hidraw) {
+    for (int i = 0; i < NODE_SLOTS; i++) {
+        struct node_entry *e = &node_tab[i];
+        if (e->used && e->hidraw == hidraw && strcmp(e->name, devname) == 0)
+            return e;
+    }
+    return NULL;
+}
+
+static void node_record(const char *devname, int hidraw, const char *devpath) {
+    struct node_entry *e = node_lookup(devname, hidraw);
+    for (int i = 0; !e && i < NODE_SLOTS; i++) {
+        if (!node_tab[i].used)
+            e = &node_tab[i];
+    }
+    if (!e) {
+        INFO("node table full, not tracking %s", devname);
+        return;
+    }
+    snprintf(e->name, sizeof(e->name), "%s", devname);
+    e->hidraw = hidraw;
+    e->used = 1;
+    snprintf(e->devpath, sizeof(e->devpath), "%s", devpath);
+}
+
+static void node_forget(const char *devname, int hidraw) {
+    struct node_entry *e = node_lookup(devname, hidraw);
+    if (e)
+        e->used = 0;
+}
+
+/*
+ * Has devname been recreated since its node was placed?  Compares the current
+ * sysfs devpath with the recorded one; an untracked node is adopted.
+ */
+static int node_recreated(const char *sysfs_base, const char *devname, int hidraw) {
+    char devpath[PATH_MAX];
+    if (!read_devpath(sysfs_base, devname, devpath, sizeof(devpath)))
+        return 0;   /* transient */
+    struct node_entry *e = node_lookup(devname, hidraw);
+    if (!e) {
+        node_record(devname, hidraw, devpath);
+        return 0;
+    }
+    /* Bounded: a devpath longer than the table field is stored truncated */
+    return strncmp(e->devpath, devpath, sizeof(e->devpath) - 1) != 0;
+}
+
+/*
+ * Devpath for a remove event: the recorded one, else a best guess from the
+ * device family.
+ */
+static void removed_devpath(const char *devname, int hidraw,
+                            char *out, size_t outsz) {
+    struct node_entry *e = node_lookup(devname, hidraw);
+    if (e)
+        snprintf(out, outsz, "%s", e->devpath);
+    else
+        snprintf(out, outsz, "/devices/virtual/%s/%s",
+                 hidraw ? "misc" : "input", devname);
+}
+
 /* Does host_path name a char device with rdev maj:min? */
 static int host_node_match(const char *host_path, unsigned int maj, unsigned int min) {
     struct stat st;
@@ -943,6 +1024,7 @@ static void create_input_node(const char *devname) {
     /* Send synthetic udev event */
     char devpath[PATH_MAX];
     if (read_devpath(SYSFS_INPUT, devname, devpath, sizeof(devpath))) {
+        node_record(devname, 0, devpath);
         send_udev_event("add", devpath, "input", nodepath, maj, min, cls);
     }
 }
@@ -967,11 +1049,11 @@ static void remove_input_node(const char *devname) {
 
         /* Send remove event */
         char devpath[PATH_MAX];
-        snprintf(devpath, sizeof(devpath),
-                 "/devices/virtual/input/%s", devname);
+        removed_devpath(devname, 0, devpath, sizeof(devpath));
         send_udev_event("remove", devpath, "input", nodepath,
                         maj, min, DEV_CLASS_UNKNOWN);
     }
+    node_forget(devname, 0);
 }
 
 static void create_hidraw_node(const char *devname) {
@@ -999,6 +1081,7 @@ static void create_hidraw_node(const char *devname) {
     /* Send synthetic udev event */
     char devpath[PATH_MAX];
     if (read_devpath(SYSFS_HIDRAW, devname, devpath, sizeof(devpath))) {
+        node_record(devname, 1, devpath);
         send_udev_event("add", devpath, "hidraw", nodepath,
                         maj, min, DEV_CLASS_HIDRAW);
     }
@@ -1020,19 +1103,20 @@ static void remove_hidraw_node(const char *devname) {
     if (maj || min) {
         remove_udev_db(maj, min);
         char devpath[PATH_MAX];
-        snprintf(devpath, sizeof(devpath),
-                 "/devices/virtual/misc/%s", devname);
+        removed_devpath(devname, 1, devpath, sizeof(devpath));
         send_udev_event("remove", devpath, "hidraw", nodepath,
                         maj, min, DEV_CLASS_UNKNOWN);
     }
+    node_forget(devname, 1);
 }
 
 /* ── Polling scan ────────────────────────────────────────── */
 
 /*
  * Pass 2 staleness.  A node is stale if its sysfs entry is gone, the device
- * is no longer container-owned (the number was reused by a host device), or
- * the node's rdev no longer matches sysfs.  An unreadable sysfs dev file is
+ * is no longer container-owned (the number was reused by a host device), the
+ * node's rdev no longer matches sysfs, or the device was recreated under the
+ * same name (its devpath changed).  An unreadable sysfs dev file is
  * treated as not stale (transient).
  */
 static int node_rdev_mismatch(const char *sysfs_base, const char *devname,
@@ -1044,7 +1128,11 @@ static int node_rdev_mismatch(const char *sysfs_base, const char *devname,
     if (stat(nodepath, &ns) != 0)
         return 0;
     /* A placeholder whose bind mount was lost is a plain file: stale */
-    return !S_ISCHR(ns.st_mode) || ns.st_rdev != makedev(maj, min);
+    if (!S_ISCHR(ns.st_mode) || ns.st_rdev != makedev(maj, min))
+        return 1;
+    /* A bound host node that host udev has since unlinked (device removed,
+     * possibly recreated under the same name): stale */
+    return bind_mode && ns.st_nlink == 0;
 }
 
 static int input_node_stale(const char *devname, const char *nodepath) {
@@ -1061,6 +1149,10 @@ static int input_node_stale(const char *devname, const char *nodepath) {
     }
     if (node_rdev_mismatch(SYSFS_INPUT, devname, nodepath)) {
         DBG("%s rdev no longer matches sysfs", devname);
+        return 1;
+    }
+    if (node_recreated(SYSFS_INPUT, devname, 0)) {
+        DBG("%s was recreated (devpath changed)", devname);
         return 1;
     }
     return 0;
@@ -1080,6 +1172,10 @@ static int hidraw_node_stale(const char *devname, const char *nodepath) {
     }
     if (node_rdev_mismatch(SYSFS_HIDRAW, devname, nodepath)) {
         DBG("hidraw %s rdev no longer matches sysfs", devname);
+        return 1;
+    }
+    if (node_recreated(SYSFS_HIDRAW, devname, 1)) {
+        DBG("hidraw %s was recreated (devpath changed)", devname);
         return 1;
     }
     return 0;
