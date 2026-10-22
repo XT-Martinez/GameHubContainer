@@ -1,0 +1,191 @@
+#!/usr/bin/python3 -I
+"""Register a shared Steam library folder before Steam starts.
+
+Reads STEAM_LIBRARY_PATH (a container path, e.g. /mnt/DATA/GAMES/SteamLibrary).
+If it is set and not yet listed in Steam's libraryfolders.vdf, creates the
+library (steamapps/ and the libraryfolder.vdf marker) and appends an entry.
+Steam rewrites libraryfolders.vdf while running, so this does nothing when a
+Steam client is already running.  Never fails the caller: errors are printed
+and the exit status is 0.
+"""
+
+import os
+import random
+import subprocess
+import sys
+import tempfile
+
+STEAM_ROOT = os.path.expanduser("~/.local/share/Steam")
+VDF = os.path.join(STEAM_ROOT, "steamapps", "libraryfolders.vdf")
+
+
+def log(msg):
+    print(f"[register-steam-library] {msg}", file=sys.stderr)
+
+
+def tokenize(text):
+    tokens, i, n = [], 0, len(text)
+    while i < n:
+        c = text[i]
+        if c.isspace():
+            i += 1
+        elif text.startswith("//", i):
+            while i < n and text[i] != "\n":
+                i += 1
+        elif c in "{}":
+            tokens.append(c)
+            i += 1
+        elif c == '"':
+            j, buf = i + 1, []
+            while j < n and text[j] != '"':
+                if text[j] == "\\" and j + 1 < n:
+                    j += 1
+                buf.append(text[j])
+                j += 1
+            tokens.append(("s", "".join(buf)))
+            i = j + 1
+        else:
+            raise ValueError(f"unexpected character {c!r} at offset {i}")
+    return tokens
+
+
+def parse(tokens, pos=0):
+    """Parse key/value pairs until '}' or end; returns (list of (key, value), pos)."""
+    items = []
+    while pos < len(tokens):
+        tok = tokens[pos]
+        if tok == "}":
+            return items, pos + 1
+        if not isinstance(tok, tuple):
+            raise ValueError("expected a key")
+        key = tok[1]
+        nxt = tokens[pos + 1]
+        if nxt == "{":
+            value, pos = parse(tokens, pos + 2)
+        elif isinstance(nxt, tuple):
+            value, pos = nxt[1], pos + 2
+        else:
+            raise ValueError(f"unexpected token after key {key!r}")
+        items.append((key, value))
+    return items, pos
+
+
+def quote(s):
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def dump(items, depth=0):
+    out, ind = [], "\t" * depth
+    for key, value in items:
+        if isinstance(value, list):
+            out.append(f"{ind}{quote(key)}\n{ind}{{\n{dump(value, depth + 1)}{ind}}}\n")
+        else:
+            out.append(f"{ind}{quote(key)}\t\t{quote(value)}\n")
+    return "".join(out)
+
+
+def atomic_write(path, text):
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".libraryfolders.")
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+
+def ancestors():
+    """PIDs of this process and its ancestors."""
+    pids, pid = set(), os.getpid()
+    while pid > 0 and pid not in pids:
+        pids.add(pid)
+        try:
+            with open(f"/proc/{pid}/stat") as f:
+                # Field 4 (ppid) follows the parenthesised comm, which may contain spaces
+                pid = int(f.read().rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            break
+    return pids
+
+
+def steam_running():
+    """Is a Steam process running, other than the wrapper that launched us?"""
+    uid = str(os.getuid())
+    r = subprocess.run(["pgrep", "-u", uid, "-x", "steam"], capture_output=True, text=True)
+    own = ancestors()
+    return any(int(p) not in own for p in r.stdout.split())
+
+
+def library_entry(path, contentid):
+    return [
+        ("path", path),
+        ("label", ""),
+        ("contentid", contentid),
+        ("totalsize", "0"),
+        ("update_clean_bytes_tally", "0"),
+        ("time_last_update_verified", "0"),
+        ("apps", []),
+    ]
+
+
+def main():
+    lib = os.environ.get("STEAM_LIBRARY_PATH", "").rstrip("/")
+    if not lib:
+        return
+    if not os.path.isabs(lib):
+        log(f"STEAM_LIBRARY_PATH must be absolute: {lib!r}")
+        return
+    if not os.path.isdir(os.path.dirname(lib)):
+        log(f"parent of {lib} does not exist (is the data drive mounted?), skipping")
+        return
+
+    if os.path.exists(VDF):
+        with open(VDF) as f:
+            root, _ = parse(tokenize(f.read()))
+        if not root or root[0][0].lower() != "libraryfolders" or not isinstance(root[0][1], list):
+            log(f"unexpected layout in {VDF}, leaving it alone")
+            return
+        folders = root[0][1]
+    else:
+        # Fresh home: Steam has not created the file yet.  Include the
+        # default library as entry 0, as Steam would.
+        folders = [("0", library_entry(STEAM_ROOT, str(random.getrandbits(63))))]
+        root = [("libraryfolders", folders)]
+
+    for _, entry in folders:
+        if isinstance(entry, list) and dict(
+                (k, v) for k, v in entry if isinstance(v, str)).get("path", "").rstrip("/") == lib:
+            return  # already registered
+
+    if steam_running():
+        log("Steam is running; it would overwrite the change, skipping")
+        return
+
+    os.makedirs(os.path.join(lib, "steamapps"), exist_ok=True)
+    marker = os.path.join(lib, "libraryfolder.vdf")
+    contentid = None
+    if os.path.exists(marker):
+        try:
+            with open(marker) as f:
+                m, _ = parse(tokenize(f.read()))
+            contentid = dict(m[0][1]).get("contentid")
+        except (ValueError, IndexError, TypeError):
+            contentid = None
+    if not contentid:
+        contentid = str(random.getrandbits(63))
+        with open(marker, "w") as f:
+            f.write(dump([("libraryfolder", [("contentid", contentid), ("label", "")])]))
+
+    indices = [int(k) for k, _ in folders if k.isdigit()]
+    folders.append((str(max(indices, default=-1) + 1), library_entry(lib, contentid)))
+
+    os.makedirs(os.path.dirname(VDF), exist_ok=True)
+    if os.path.exists(VDF) and not os.path.exists(VDF + ".bak"):
+        with open(VDF) as src, open(VDF + ".bak", "w") as dst:
+            dst.write(src.read())
+    atomic_write(VDF, dump(root))
+    log(f"registered Steam library {lib}")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:  # never block Steam from starting
+        log(f"error: {e}")

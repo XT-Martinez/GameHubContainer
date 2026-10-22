@@ -12,4 +12,8 @@ else
     export LD_PRELOAD="${shim}"
 fi
 
+# Add the shared library (STEAM_LIBRARY_PATH) to Steam's library list before
+# Steam starts; a no-op once registered or while Steam is already running.
+/usr/local/bin/register-steam-library || true
+
 exec /usr/bin/steam "$@"

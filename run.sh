@@ -24,6 +24,9 @@ IMAGE="${IMAGE:-gamehub-container:latest}"
 GS_ENABLE_CTRL_12="${GS_ENABLE_CTRL_12:-0}"
 ENABLE_RYZENADJ="${ENABLE_RYZENADJ:-0}"
 ROOTFUL="${ROOTFUL:-0}"
+# Shared Steam library (container path, under the /mnt/DATA bind). Registered in
+# Steam's library list before Steam starts. Set to empty to disable.
+STEAM_LIBRARY_PATH="${STEAM_LIBRARY_PATH-/mnt/DATA/GAMES/SteamLibrary}"
 # Sunshine web UI CSRF origins: the host's LAN addresses and hostname, so the UI
 # works from other machines. Override with SUNSHINE_CSRF_ORIGINS (comma-separated https:// origins).
 if [[ -z "${SUNSHINE_CSRF_ORIGINS:-}" ]]; then
@@ -67,6 +70,7 @@ echo "Sunshine MAC: ${SUNSHINE_MAC_ADDRESS}"
 echo "Host data: ${HOST_DATA_PATH} -> /mnt/DATA"
 echo "Steam Ctrl+1/2 shortcuts: ${GS_ENABLE_CTRL_12}"
 echo "Web UI origins: ${SUNSHINE_CSRF_ORIGINS:-none}"
+echo "Steam library: ${STEAM_LIBRARY_PATH:-none}"
 echo "RyzenAdj TDP access: ${ENABLE_RYZENADJ}"
 
 # Rootless and rootful podman keep separate image stores.
@@ -193,6 +197,7 @@ echo "Starting ${NAME} (${MODE_LABEL})"
     -e "SUNSHINE_MAC_ADDRESS=${SUNSHINE_MAC_ADDRESS}" \
     -e "GS_ENABLE_CTRL_12=${GS_ENABLE_CTRL_12}" \
     -e "SUNSHINE_CSRF_ORIGINS=${SUNSHINE_CSRF_ORIGINS}" \
+    -e "STEAM_LIBRARY_PATH=${STEAM_LIBRARY_PATH}" \
     -e SCREEN_WIDTH="${SCREEN_WIDTH:-1920}" \
     -e SCREEN_HEIGHT="${SCREEN_HEIGHT:-1080}" \
     "${PORT_ARGS[@]}" \
