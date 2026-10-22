@@ -1,0 +1,181 @@
+#!/usr/bin/python3 -I
+"""Run one clamped RyzenAdj request for a rootless GameHubContainer.
+
+Installed by scripts/install-host-ryzenadj.sh to
+/usr/local/libexec/gamehub-ryzenadjd and started (as root) by
+gamehub-ryzenadj@.service, once per connection to
+/run/gamehub-ryzenadj/ryzenadj.sock (Accept=yes, the connection is fd 0).
+
+The container's `ryzenadj` client (scripts/ryzenadj) sends {"argv": [...]}
+and receives {"rc": int, "stdout": str, "stderr": str}. Only the options in
+OPTIONS are accepted, each value must fall in the range configured in
+/etc/gamehub/ryzenadj.conf, and the caller's uid (SO_PEERCRED) must be listed
+there. The arguments are rebuilt in --name=value form and passed to the host
+ryzenadj binary without a shell, so the container never gets raw SMU access.
+"""
+
+import configparser
+import fcntl
+import json
+import re
+import socket
+import struct
+import subprocess
+import sys
+
+CONFIG = "/etc/gamehub/ryzenadj.conf"
+LOCK = "/run/gamehub-ryzenadj/lock"
+MAX_REQUEST = 64 * 1024
+
+# Long name -> (short option, value group). Group None means a flag.
+OPTIONS = {
+    "help": ("h", None),
+    "info": ("i", None),
+    "dump-table": (None, None),
+    "power-saving": (None, None),
+    "max-performance": (None, None),
+    "stapm-limit": ("a", "power"),
+    "fast-limit": ("b", "power"),
+    "slow-limit": ("c", "power"),
+    "apu-slow-limit": (None, "power"),
+    "slow-time": ("d", "time"),
+    "stapm-time": ("e", "time"),
+    "tctl-temp": ("f", "temp"),
+    "apu-skin-temp": (None, "temp"),
+    "dgpu-skin-temp": (None, "temp"),
+    "vrm-current": ("g", "current"),
+    "vrmsoc-current": ("j", "current"),
+    "vrmmax-current": ("k", "current"),
+    "vrmsocmax-current": ("l", "current"),
+}
+SHORT = {short: name for name, (short, _) in OPTIONS.items() if short}
+
+
+class Rejected(Exception):
+    pass
+
+
+def log(msg):
+    print(msg, file=sys.stderr, flush=True)
+
+
+def parse_range(text, where):
+    text = text.strip().lower()
+    if text in ("", "off"):
+        return None
+    m = re.fullmatch(r"([0-9]+)\s*-\s*([0-9]+)", text)
+    if not m or int(m[1]) > int(m[2]):
+        raise ValueError(f"{where}: expected 'min-max' or 'off', got {text!r}")
+    return int(m[1]), int(m[2])
+
+
+def load_config():
+    cp = configparser.ConfigParser()
+    if not cp.read(CONFIG):
+        raise ValueError(f"cannot read {CONFIG}")
+    uids = []
+    for part in cp.get("access", "allowed_uids", fallback="").split(","):
+        r = parse_range(part if "-" in part else f"{part}-{part}", "allowed_uids")
+        if r:
+            uids.append(r)
+    limits = {}
+    section = cp["limits"] if cp.has_section("limits") else {}
+    for name, (_, group) in OPTIONS.items():
+        if group:
+            text = section.get(name, section.get(group, "off"))
+            limits[name] = parse_range(text, f"limits.{name}")
+    binary = cp.get("daemon", "ryzenadj", fallback="/usr/local/bin/ryzenadj")
+    return uids, limits, binary
+
+
+def normalize(argv, limits):
+    """Validate argv and rebuild it as --name / --name=value arguments."""
+    out, i = [], 0
+    while i < len(argv):
+        arg = argv[i]
+        i += 1
+        if not isinstance(arg, str):
+            raise Rejected("arguments must be strings")
+        if arg.startswith("--"):
+            name, has_value, value = arg[2:].partition("=")
+        elif re.fullmatch(r"-[A-Za-z].*", arg):
+            name, value = SHORT.get(arg[1], arg), arg[2:]
+            has_value = bool(value)
+        else:
+            raise Rejected(f"unexpected argument {arg!r}")
+        if name not in OPTIONS:
+            raise Rejected(f"option not allowed: {arg}")
+        group = OPTIONS[name][1]
+        if group is None:
+            if has_value:
+                raise Rejected(f"--{name} takes no value")
+            out.append(f"--{name}")
+            continue
+        if not has_value:
+            if i >= len(argv):
+                raise Rejected(f"--{name} needs a value")
+            value = argv[i]
+            i += 1
+        if not isinstance(value, str) or not re.fullmatch(r"[0-9]{1,10}", value):
+            raise Rejected(f"--{name}: value must be a non-negative integer, got {value!r}")
+        allowed = limits[name]
+        if allowed is None:
+            raise Rejected(f"--{name} is disabled in {CONFIG}")
+        if not allowed[0] <= int(value) <= allowed[1]:
+            raise Rejected(f"--{name}={value} is outside the allowed range "
+                           f"{allowed[0]}-{allowed[1]} ({CONFIG})")
+        out.append(f"--{name}={int(value)}")
+    return out
+
+
+def handle(conn):
+    _, uid, _ = struct.unpack("3i", conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED,
+                                                    struct.calcsize("3i")))
+    uids, limits, binary = load_config()
+    if not any(lo <= uid <= hi for lo, hi in uids):
+        log(f"denied uid {uid}")
+        return {"rc": 1, "stdout": "", "stderr": f"ryzenadj: uid {uid} is not allowed in {CONFIG}\n"}
+
+    data = b""
+    while len(data) <= MAX_REQUEST:
+        chunk = conn.recv(4096)
+        if not chunk:
+            break
+        data += chunk
+    if len(data) > MAX_REQUEST:
+        raise Rejected("request too large")
+    try:
+        argv = json.loads(data)["argv"]
+    except (ValueError, KeyError, TypeError):
+        raise Rejected("malformed request") from None
+    if not isinstance(argv, list):
+        raise Rejected("malformed request")
+    args = normalize(argv, limits)
+
+    if any(a.split("=")[0] not in ("--help", "--info", "--dump-table") for a in args):
+        log(f"uid {uid}: ryzenadj {' '.join(args)}")
+    # One SMU conversation at a time.
+    with open(LOCK, "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        r = subprocess.run([binary, *args], capture_output=True, text=True,
+                           errors="replace", timeout=30)
+    return {"rc": r.returncode, "stdout": r.stdout, "stderr": r.stderr}
+
+
+def main():
+    conn = socket.socket(fileno=0)
+    try:
+        reply = handle(conn)
+    except Rejected as e:
+        log(f"rejected: {e}")
+        reply = {"rc": 2, "stdout": "", "stderr": f"ryzenadj: {e}\n"}
+    except Exception as e:
+        log(f"error: {e}")
+        reply = {"rc": 1, "stdout": "", "stderr": f"ryzenadj: host helper error: {e}\n"}
+    conn.sendall(json.dumps(reply).encode())
+    conn.shutdown(socket.SHUT_WR)
+    conn.close()
+
+
+if __name__ == "__main__":
+    main()

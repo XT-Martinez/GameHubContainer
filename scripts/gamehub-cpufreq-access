@@ -1,0 +1,41 @@
+#!/bin/bash
+# Hand the CPU power knobs (amd-pstate EPP, scaling governor, boost) to the
+# GameHub user's rootless containers, so SimpleDeckyTDP can set them without
+# root on the host. Run at boot by gamehub-cpufreq-access.service; installed
+# to /usr/local/libexec by scripts/install-host-ryzenadj.sh.
+#
+# Each file gets owner CPUFREQ_OWNER_UID (container root in keep-id containers)
+# and group CPUFREQ_GROUP_GID (the host user, which is also container root in
+# plain rootless containers), mode 0664. Everything else under
+# /sys/devices/system/cpu stays root-owned, so run.sh can bind that directory
+# read-write. The kernel keeps the ownership until reboot or until the
+# cpufreq policies are recreated (amd_pstate mode change); rerun the service
+# after the latter.
+
+set -euo pipefail
+
+CONFIG=/etc/gamehub/cpufreq-access.conf
+CPUFREQ=/sys/devices/system/cpu/cpufreq
+
+# shellcheck source=/dev/null
+. "$CONFIG"
+[[ "${CPUFREQ_OWNER_UID:-}" =~ ^[0-9]+$ && "${CPUFREQ_OWNER_UID}" -ne 0 ]] || {
+    echo "gamehub-cpufreq-access: CPUFREQ_OWNER_UID must be a non-root uid in $CONFIG" >&2
+    exit 1
+}
+[[ "${CPUFREQ_GROUP_GID:-}" =~ ^[0-9]+$ && "${CPUFREQ_GROUP_GID}" -ne 0 ]] || {
+    echo "gamehub-cpufreq-access: CPUFREQ_GROUP_GID must be a non-root gid in $CONFIG" >&2
+    exit 1
+}
+
+shopt -s nullglob
+files=()
+for f in "$CPUFREQ/boost" "$CPUFREQ"/policy*/boost \
+    "$CPUFREQ"/policy*/energy_performance_preference "$CPUFREQ"/policy*/scaling_governor; do
+    [ -f "$f" ] && files+=("$f")
+done
+[ "${#files[@]}" -gt 0 ] || { echo "gamehub-cpufreq-access: no cpufreq files found" >&2; exit 1; }
+
+chown "$CPUFREQ_OWNER_UID:$CPUFREQ_GROUP_GID" "${files[@]}"
+chmod 0664 "${files[@]}"
+echo "gamehub-cpufreq-access: ${#files[@]} files now owned by $CPUFREQ_OWNER_UID:$CPUFREQ_GROUP_GID"

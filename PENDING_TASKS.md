@@ -74,16 +74,16 @@ sudo modprobe uhid && echo uhid | sudo tee /etc/modules-load.d/uhid.conf && sudo
   EPERM), so the container would lose write access to the shared `/mnt/DATA`
   drive.
 
-## 4. Rootless RyzenAdj (revisit later)
+## 4. Rootless RyzenAdj
 
-RyzenAdj needs host `CAP_SYS_ADMIN` (PCI config writes) or `CAP_SYS_RAWIO`
-(`/dev/mem`); namespaced caps do not count, so it currently forces rootful mode.
-Planned approach: a small root systemd service on the host that runs RyzenAdj
-and accepts only a whitelist of clamped requests (e.g. set STAPM/fast/slow
-limits within a min/max) over a Unix socket. Bind the socket into the container
-and ship a `ryzenadj` wrapper that forwards to it. The container never gets raw
-SMU access. (Alternative considered: the out-of-tree `ryzen_smu` module with
-file-permission access; rejected for kernel-rebuild/signing upkeep.)
+Implemented as a host helper: `scripts/install-host-ryzenadj.sh` installs
+RyzenAdj, `gamehub-ryzenadjd` (whitelisted, clamped options, uid-checked) and
+`gamehub-ryzenadj.socket`; `run.sh` binds the socket directory into rootless
+containers and `scripts/ryzenadj` forwards to it. SimpleDeckyTDP uses the
+`ryzenadj` on `PATH`, so its TDP control goes through the helper; its EPP,
+governor and boost controls work through `gamehub-cpufreq-access.service`.
+Remaining: undervolting (curve optimiser) and other unclamped options still
+need the rootful fallback.
 
 ## 5. Cleanup
 

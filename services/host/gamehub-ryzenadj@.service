@@ -1,0 +1,16 @@
+[Unit]
+Description=GameHub RyzenAdj request
+
+[Service]
+ExecStart=/usr/local/libexec/gamehub-ryzenadjd
+StandardInput=socket
+StandardOutput=journal
+StandardError=journal
+# RyzenAdj needs /dev/mem and PCI config writes, nothing else.
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_RAWIO
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+ReadWritePaths=/run/gamehub-ryzenadj

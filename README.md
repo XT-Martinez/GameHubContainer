@@ -132,17 +132,33 @@ To restore the Ctrl shortcuts for an instance, start it with:
 GS_ENABLE_CTRL_12=1 ./run.sh 1 57989
 ```
 
-### Decky / RyzenAdj TDP Control
+### RyzenAdj TDP Control
 
-SimpleDeckyTDP can use its bundled RyzenAdj binary from inside the container, but RyzenAdj needs hardware-level host access that is intentionally disabled by default. After installing Decky Loader and SimpleDeckyTDP inside the container, launch the instance with:
+RyzenAdj needs hardware-level host access, which rootless containers cannot have. Instead, a small root helper on the host runs RyzenAdj on the container's behalf, accepting only power, temperature and (optionally) current limits within configured ranges. Install it once on the host:
+
+```bash
+scripts/install-host-ryzenadj.sh
+```
+
+This builds RyzenAdj in a throwaway Fedora container, installs it to `/usr/local/bin/ryzenadj` (usable on the host with `sudo ryzenadj -i`), and enables `gamehub-ryzenadj.socket`. `run.sh` binds the socket into rootless containers when it exists, so restart running instances afterwards. Inside the container, `ryzenadj` then works without root:
+
+```bash
+ryzenadj -i
+ryzenadj --power-saving
+ryzenadj --stapm-limit=45000 --fast-limit=65000 --slow-limit=55000
+```
+
+Allowed options: `-i/--info`, `--dump-table`, `--power-saving`, `--max-performance`, the STAPM/fast/slow/APU-slow limits, their time constants, `--tctl-temp`, `--apu-skin-temp`, `--dgpu-skin-temp`, and the VDD/SoC TDC/EDC current limits. Ranges are set in `/etc/gamehub/ryzenadj.conf` (read on every request): power 5–65 W, time 1–300 s, temperature 60–100 °C. Current limits are off by default, because raising them beyond the board's defaults can overload the VRM. Other options (overclocking, curve optimiser, clocks) are always rejected. Requests that change settings, and rejected requests, are logged to the host journal (`journalctl -u 'gamehub-ryzenadj@*'`).
+
+Only the host user and its subuid range (its rootless containers) may connect. Do not run competing host-side and container-side TDP controllers at the same time.
+
+For unrestricted RyzenAdj access from inside the container (e.g. undervolting through SimpleDeckyTDP), the rootful fallback still exists:
 
 ```bash
 ENABLE_RYZENADJ=1 ./run.sh 1 57989
 ```
 
-This switches that instance to rootful `sudo podman` (RyzenAdj cannot work rootless) and grants container root `CAP_SYS_RAWIO`, `/dev/mem`, and read/write access to `/sys/bus/pci/devices/0000:00:00.0/config`; all other `/sys` paths remain read-only. It is only appropriate for a trusted single-user container, because container root can then tune the host APU.
-
-The host must already pass `sudo ryzenadj -i`. If its PCI host-bridge path differs, set `RYZENADJ_PCI_CONFIG` to the path used by host RyzenAdj. Do not run competing host-side and container-side TDP controllers at the same time.
+This switches that instance to rootful `sudo podman` and grants container root `CAP_SYS_RAWIO`, `/dev/mem`, and read/write access to `/sys/bus/pci/devices/0000:00:00.0/config`; all other `/sys` paths remain read-only. It is only appropriate for a trusted single-user container, because container root can then tune the host APU without limits. If the PCI host-bridge path differs, set `RYZENADJ_PCI_CONFIG` to the path used by host RyzenAdj.
 
 ### Desktop Mode (Switch to Desktop)
 
@@ -414,7 +430,7 @@ Deck UI can look correct while a game has inverted/wrong face buttons if the gam
 
 ## Rootful vs Rootless Podman
 
-**Rootless podman (the default for `./run.sh`) is recommended.** It needs no sudo and keeps input isolation between instances (with the caveat under Rootless limitations), using a hidden host `/dev` bind and the daemon's bind-mount path instead of `mknod`. Rootful podman is an opt-in fallback, needed only for RyzenAdj.
+**Rootless podman (the default for `./run.sh`) is recommended.** It needs no sudo and keeps input isolation between instances (with the caveat under Rootless limitations), using a hidden host `/dev` bind and the daemon's bind-mount path instead of `mknod`. Rootful podman is an opt-in fallback, needed only for unrestricted RyzenAdj access (e.g. a bundled RyzenAdj in a Decky plugin).
 
 ### What works in rootless mode
 
@@ -428,7 +444,7 @@ Deck UI can look correct while a game has inverted/wrong face buttons if the gam
 | PS5 DualSense (UHID) | Yes (with host udev rule) | Yes |
 | Input isolation (`/dev/input/` tmpfs) | Yes (bind-mounted host nodes) | Yes (`mknod`) |
 | Multi-instance input isolation | Yes (one host user, see limitations) | Yes |
-| RyzenAdj / TDP control | **No** | Yes |
+| RyzenAdj / TDP control | Clamped, via host helper (`scripts/install-host-ryzenadj.sh`) | Yes, unrestricted |
 | Networking | Private netns, published ports | Host network allowed |
 
 ### Rootful fallback
@@ -437,7 +453,7 @@ Deck UI can look correct while a game has inverted/wrong face buttons if the gam
 
 ### Rootless limitations
 
-- **RyzenAdj** needs real `CAP_SYS_RAWIO` and `/dev/mem`, which rootless cannot grant. Use the rootful fallback above.
+- **RyzenAdj** needs real `CAP_SYS_RAWIO` and `/dev/mem`, which rootless cannot grant. The host helper (see RyzenAdj TDP Control) runs a whitelisted, clamped set of options instead; use the rootful fallback for anything else.
 - **No KMS/DRM capture.** The image uses gamescope scanout capture (Wayland, DMA-BUF) only. Sunshine gets no file capabilities, because they would stop the input shim from loading (see the Dockerfile).
 - **Single host user**: all instances run under one host user, so the udev ownership is the same for every container. Isolation protects against accidental cross-talk between instances and the host desktop, but not against a deliberately malicious container. Per-instance host users would be needed for that.
 

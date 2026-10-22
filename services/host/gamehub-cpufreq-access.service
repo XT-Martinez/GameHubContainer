@@ -1,0 +1,14 @@
+[Unit]
+Description=GameHub container access to CPU EPP, governor and boost
+# After tuned, so its boot-time profile is applied before the handover
+# (ownership does not stop later tuned writes, which run as root).
+After=tuned.service tuned-ppd.service power-profiles-daemon.service
+ConditionPathExists=/etc/gamehub/cpufreq-access.conf
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/libexec/gamehub-cpufreq-access
+
+[Install]
+WantedBy=multi-user.target

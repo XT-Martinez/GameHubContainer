@@ -1,0 +1,13 @@
+#!/bin/sh
+# Container-side ryzenadj: runs the host helper client (gamehub-ryzenadj-client).
+# Callers such as Decky Loader (a PyInstaller bundle) export LD_LIBRARY_PATH and
+# PYTHON* variables pointing at their own Python, which breaks /usr/bin/python3,
+# so restore the caller's original library path and drop those first.
+if [ -n "${LD_LIBRARY_PATH_ORIG+x}" ]; then
+    LD_LIBRARY_PATH="$LD_LIBRARY_PATH_ORIG"
+    export LD_LIBRARY_PATH
+else
+    unset LD_LIBRARY_PATH
+fi
+unset PYTHONHOME PYTHONPATH
+exec /usr/bin/python3 -I /usr/local/bin/gamehub-ryzenadj-client "$@"

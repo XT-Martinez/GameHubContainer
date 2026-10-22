@@ -1,0 +1,41 @@
+#!/usr/bin/python3 -I
+"""Host helper client behind the container's ryzenadj (scripts/ryzenadj).
+
+Rootless containers cannot reach the SMU, so this sends the command line to
+gamehub-ryzenadjd on the host (scripts/install-host-ryzenadj.sh) through the
+socket that run.sh binds in, and prints its output. The host only accepts
+power/temperature/current limits within the ranges in its
+/etc/gamehub/ryzenadj.conf, plus -i/--info, --dump-table, --power-saving and
+--max-performance.
+"""
+
+import json
+import os
+import socket
+import sys
+
+SOCKET = os.environ.get("GAMEHUB_RYZENADJ_SOCKET", "/run/gamehub-ryzenadj/ryzenadj.sock")
+
+
+def main():
+    if not os.path.exists(SOCKET):
+        sys.exit(f"ryzenadj: host helper socket {SOCKET} not found. Run "
+                 "scripts/install-host-ryzenadj.sh on the host, then restart the container with run.sh.")
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+        try:
+            s.connect(SOCKET)
+            s.sendall(json.dumps({"argv": sys.argv[1:]}).encode())
+            s.shutdown(socket.SHUT_WR)
+            data = b""
+            while chunk := s.recv(65536):
+                data += chunk
+            reply = json.loads(data)
+        except (OSError, ValueError) as e:
+            sys.exit(f"ryzenadj: host helper request failed: {e}")
+    sys.stdout.write(reply.get("stdout", ""))
+    sys.stderr.write(reply.get("stderr", ""))
+    sys.exit(reply.get("rc", 1))
+
+
+if __name__ == "__main__":
+    main()

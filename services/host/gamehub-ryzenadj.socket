@@ -1,0 +1,14 @@
+[Unit]
+Description=GameHub RyzenAdj helper socket (rootless containers)
+
+[Socket]
+# Bound into containers by run.sh. Callers are checked by uid (SO_PEERCRED)
+# against /etc/gamehub/ryzenadj.conf, so the socket itself is world-connectable.
+ListenStream=/run/gamehub-ryzenadj/ryzenadj.sock
+SocketMode=0666
+DirectoryMode=0755
+Accept=yes
+MaxConnections=8
+
+[Install]
+WantedBy=sockets.target

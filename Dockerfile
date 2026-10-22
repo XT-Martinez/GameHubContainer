@@ -357,7 +357,7 @@ RUN mkdir -p /usr/share/applications/steam && \
        /etc/gamescope-session-plus/sessions.d/steam && \
     ln -sf /usr/local/bin/steamos-session-select /usr/bin/steamos-session-select && \
     ln -sf /usr/local/bin/return-to-gamemode /usr/bin/return-to-gamemode && \
-    chmod +x /usr/local/bin/*.sh /usr/local/bin/steam /usr/local/bin/register-steam-library /usr/local/bin/session-supervisor.sh /usr/local/bin/start-desktop-session.sh /usr/local/bin/desktop-launcher.sh /usr/local/bin/desktop-steam.sh /usr/local/bin/switch-to-desktop.sh /usr/local/bin/return-to-steam.sh /usr/local/bin/steamos-session-select /usr/local/bin/return-to-gamemode /usr/share/gamehub-desktop/labwc/autostart
+    chmod +x /usr/local/bin/*.sh /usr/local/bin/steam /usr/local/bin/register-steam-library /usr/local/bin/ryzenadj /usr/local/bin/gamehub-ryzenadj-client /usr/local/bin/session-supervisor.sh /usr/local/bin/start-desktop-session.sh /usr/local/bin/desktop-launcher.sh /usr/local/bin/desktop-steam.sh /usr/local/bin/switch-to-desktop.sh /usr/local/bin/return-to-steam.sh /usr/local/bin/steamos-session-select /usr/local/bin/return-to-gamemode /usr/share/gamehub-desktop/labwc/autostart
 
 # Install system services (need real root for mknod/chmod in rootless podman)
 COPY services/device-permissions.service /etc/systemd/system/device-permissions.service

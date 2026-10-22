@@ -8,10 +8,13 @@
 #   default                   rootless podman (no sudo). Per-container input
 #                             isolation via the keep-id userns and a hidden
 #                             read-only host /dev bind. Always uses published
-#                             ports (never --network=host).
-#   ENABLE_RYZENADJ=1 or      rootful legacy mode (sudo podman). Required for
-#   ROOTFUL=1                 RyzenAdj (/dev/mem). Host networking when no port
-#                             is given; daemon falls back to mknod.
+#                             ports (never --network=host). RyzenAdj works
+#                             through the host helper when it is installed
+#                             (scripts/install-host-ryzenadj.sh).
+#   ENABLE_RYZENADJ=1 or      rootful legacy mode (sudo podman). Gives the
+#   ROOTFUL=1                 container direct RyzenAdj access (/dev/mem). Host
+#                             networking when no port is given; daemon falls
+#                             back to mknod.
 
 set -euo pipefail
 
@@ -36,6 +39,11 @@ if [[ -z "${SUNSHINE_CSRF_ORIGINS:-}" ]]; then
     } | paste -sd, -)"
 fi
 RYZENADJ_PCI_CONFIG="${RYZENADJ_PCI_CONFIG:-/sys/bus/pci/devices/0000:00:00.0/config}"
+# Host RyzenAdj helper socket directory (scripts/install-host-ryzenadj.sh), used in rootless mode.
+RYZENADJ_HELPER_DIR=/run/gamehub-ryzenadj
+# CPU EPP/governor/boost files, handed to rootless containers at boot by
+# gamehub-cpufreq-access.service (scripts/install-host-ryzenadj.sh).
+CPUFREQ_EPP_FILE=/sys/devices/system/cpu/cpufreq/policy0/energy_performance_preference
 
 if [[ "${ENABLE_RYZENADJ}" == "1" || "${ROOTFUL}" == "1" ]]; then
     ROOTFUL_MODE=1
@@ -71,7 +79,19 @@ echo "Host data: ${HOST_DATA_PATH} -> /mnt/DATA"
 echo "Steam Ctrl+1/2 shortcuts: ${GS_ENABLE_CTRL_12}"
 echo "Web UI origins: ${SUNSHINE_CSRF_ORIGINS:-none}"
 echo "Steam library: ${STEAM_LIBRARY_PATH:-none}"
-echo "RyzenAdj TDP access: ${ENABLE_RYZENADJ}"
+if [[ "${ENABLE_RYZENADJ}" == "1" ]]; then
+    RYZENADJ_LABEL="direct (rootful /dev/mem)"
+elif [[ "${ROOTFUL_MODE}" == "0" && -S "${RYZENADJ_HELPER_DIR}/ryzenadj.sock" ]]; then
+    RYZENADJ_LABEL="host helper (${RYZENADJ_HELPER_DIR})"
+else
+    RYZENADJ_LABEL="none"
+fi
+echo "RyzenAdj TDP access: ${RYZENADJ_LABEL}"
+CPUFREQ_RW=0
+if [[ "${ROOTFUL_MODE}" == "0" && -e "${CPUFREQ_EPP_FILE}" && "$(stat -c %u "${CPUFREQ_EPP_FILE}")" != "0" ]]; then
+    CPUFREQ_RW=1
+fi
+echo "CPU EPP/boost access: $([[ "${CPUFREQ_RW}" == "1" ]] && echo "read-write (gamehub-cpufreq-access)" || echo "read-only")"
 
 # Rootless and rootful podman keep separate image stores.
 if ! "${PODMAN[@]}" image exists "${IMAGE}"; then
@@ -106,6 +126,17 @@ if [[ "${ENABLE_RYZENADJ}" == "1" ]]; then
         --device /dev/mem
         --mount "type=bind,src=${RYZENADJ_PCI_CONFIG},dst=${RYZENADJ_PCI_CONFIG},rw=true"
     )
+elif [[ "${ROOTFUL_MODE}" == "0" && -S "${RYZENADJ_HELPER_DIR}/ryzenadj.sock" ]]; then
+    # Rootless: the container's ryzenadj wrapper forwards to the host helper,
+    # which only runs clamped requests. Bind the directory, not the socket, so
+    # the container keeps working if systemd recreates the socket.
+    RYZENADJ_ARGS=(--mount "type=bind,src=${RYZENADJ_HELPER_DIR},dst=${RYZENADJ_HELPER_DIR}")
+fi
+if [[ "${CPUFREQ_RW}" == "1" ]]; then
+    # Read-write mount over the read-only /sys bind. File ownership limits
+    # writes to the files gamehub-cpufreq-access handed over; the rest of
+    # /sys/devices/system/cpu stays root-owned.
+    RYZENADJ_ARGS+=(--mount "type=bind,src=/sys/devices/system/cpu,dst=/sys/devices/system/cpu,rw=true")
 fi
 
 # Mode-specific runtime args
