@@ -1,0 +1,20 @@
+[Unit]
+Description=SteamDeck Plugin Loader (Decky)
+After=network.target
+# Decky lives in the persistent home volume (install-decky); nothing to do until it is installed.
+ConditionPathExists=/home/gamer/homebrew/services/PluginLoader
+
+[Service]
+Type=simple
+User=root
+Restart=always
+KillMode=process
+TimeoutStopSec=15
+ExecStart=/home/gamer/homebrew/services/PluginLoader
+WorkingDirectory=/home/gamer/homebrew/services
+Environment=UNPRIVILEGED_PATH=/home/gamer/homebrew
+Environment=PRIVILEGED_PATH=/home/gamer/homebrew
+Environment=LOG_LEVEL=INFO
+
+[Install]
+WantedBy=multi-user.target

@@ -152,6 +152,16 @@ Allowed options: `-i/--info`, `--dump-table`, `--power-saving`, `--max-performan
 
 Only the host user and its subuid range (its rootless containers) may connect. Do not run competing host-side and container-side TDP controllers at the same time.
 
+#### Decky Loader and SimpleDeckyTDP
+
+Install Decky Loader (and optionally SimpleDeckyTDP) into the instance's persistent home volume:
+
+```bash
+podman exec sunshine-1 install-decky --simpledeckytdp
+```
+
+The image's `plugin_loader.service` starts Decky whenever it is installed, so it survives container restarts and Decky can update itself. Restart Steam once afterwards so Decky can attach. SimpleDeckyTDP finds the container's `ryzenadj` on `PATH`, so its TDP slider goes through the host helper above (within the configured ranges). Its EPP, CPU governor and boost controls work in rootless instances: the installer's `gamehub-cpufreq-access.service` hands those cpufreq files to the user's rootless containers at boot, and `run.sh` then binds `/sys/devices/system/cpu` read-write (the remaining files there stay root-owned). Its other CPU and GPU controls (SMT, GPU clocks) write elsewhere in `/sys`, which stays read-only, so they have no effect. Host power profile switches (tuned, GNOME's power mode) still rewrite EPP, so the last writer wins.
+
 For unrestricted RyzenAdj access from inside the container (e.g. undervolting through SimpleDeckyTDP), the rootful fallback still exists:
 
 ```bash

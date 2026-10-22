@@ -357,12 +357,14 @@ RUN mkdir -p /usr/share/applications/steam && \
        /etc/gamescope-session-plus/sessions.d/steam && \
     ln -sf /usr/local/bin/steamos-session-select /usr/bin/steamos-session-select && \
     ln -sf /usr/local/bin/return-to-gamemode /usr/bin/return-to-gamemode && \
-    chmod +x /usr/local/bin/*.sh /usr/local/bin/steam /usr/local/bin/register-steam-library /usr/local/bin/ryzenadj /usr/local/bin/gamehub-ryzenadj-client /usr/local/bin/session-supervisor.sh /usr/local/bin/start-desktop-session.sh /usr/local/bin/desktop-launcher.sh /usr/local/bin/desktop-steam.sh /usr/local/bin/switch-to-desktop.sh /usr/local/bin/return-to-steam.sh /usr/local/bin/steamos-session-select /usr/local/bin/return-to-gamemode /usr/share/gamehub-desktop/labwc/autostart
+    chmod +x /usr/local/bin/*.sh /usr/local/bin/steam /usr/local/bin/register-steam-library /usr/local/bin/ryzenadj /usr/local/bin/gamehub-ryzenadj-client /usr/local/bin/install-decky /usr/local/bin/session-supervisor.sh /usr/local/bin/start-desktop-session.sh /usr/local/bin/desktop-launcher.sh /usr/local/bin/desktop-steam.sh /usr/local/bin/switch-to-desktop.sh /usr/local/bin/return-to-steam.sh /usr/local/bin/steamos-session-select /usr/local/bin/return-to-gamemode /usr/share/gamehub-desktop/labwc/autostart
 
 # Install system services (need real root for mknod/chmod in rootless podman)
 COPY services/device-permissions.service /etc/systemd/system/device-permissions.service
 COPY services/input-mknod.service /etc/systemd/system/input-mknod.service
 COPY services/container-env.service /etc/systemd/system/container-env.service
+# Decky Loader; starts only once install-decky has put it in the home volume
+COPY services/plugin_loader.service /etc/systemd/system/plugin_loader.service
 RUN mkdir -p /etc/systemd/system/multi-user.target.wants && \
     ln -sf /etc/systemd/system/device-permissions.service \
         /etc/systemd/system/multi-user.target.wants/device-permissions.service && \
@@ -370,6 +372,8 @@ RUN mkdir -p /etc/systemd/system/multi-user.target.wants && \
         /etc/systemd/system/multi-user.target.wants/input-mknod.service && \
     ln -sf /etc/systemd/system/container-env.service \
         /etc/systemd/system/multi-user.target.wants/container-env.service && \
+    ln -sf /etc/systemd/system/plugin_loader.service \
+        /etc/systemd/system/multi-user.target.wants/plugin_loader.service && \
     ln -sf /usr/lib/systemd/system/NetworkManager.service \
         /etc/systemd/system/multi-user.target.wants/NetworkManager.service
 

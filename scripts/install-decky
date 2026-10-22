@@ -1,0 +1,85 @@
+#!/bin/bash
+# Install Decky Loader into the persistent home volume, optionally with the
+# SimpleDeckyTDP plugin. Run as root inside the container:
+#
+#   podman exec sunshine-1 install-decky [--simpledeckytdp]
+#
+# The image ships plugin_loader.service, which starts once
+# /home/gamer/homebrew/services/PluginLoader exists, so the install survives
+# container restarts and Decky's own updater keeps working. Steam must be
+# restarted once afterwards to enable its CEF remote debugging, which Decky
+# uses to inject its UI.
+#
+# DECKY_VERSION (default: latest release) and SIMPLEDECKYTDP_VERSION (default:
+# latest release) pick specific release tags.
+
+set -euo pipefail
+
+USER_NAME=gamer
+HOMEBREW=/home/gamer/homebrew
+STEAM_DIR=/home/gamer/.local/share/Steam
+
+die() {
+    echo "install-decky: $*" >&2
+    exit 1
+}
+
+[ "$(id -u)" -eq 0 ] || die "run as root (podman exec <container> install-decky)"
+
+WITH_TDP=0
+for arg in "$@"; do
+    case "$arg" in
+        --simpledeckytdp) WITH_TDP=1 ;;
+        *) die "unknown argument: $arg" ;;
+    esac
+done
+
+# Prints the browser_download_url of the asset matching $2 in release $1 of a
+# GitHub repo (tag, or "latest").
+release_asset() {
+    local repo="$1" pattern="$2" tag="$3" api
+    if [ "$tag" = latest ]; then
+        api="https://api.github.com/repos/$repo/releases/latest"
+    else
+        api="https://api.github.com/repos/$repo/releases/tags/$tag"
+    fi
+    curl -fsSL "$api" | jq -r --arg p "$pattern" \
+        '(.tag_name) + " " + ([.assets[] | select(.name | test($p)) | .browser_download_url][0] // "")'
+}
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+read -r version url < <(release_asset SteamDeckHomebrew/decky-loader '^PluginLoader$' "${DECKY_VERSION:-latest}")
+[ -n "${url:-}" ] || die "no PluginLoader asset found for Decky release ${DECKY_VERSION:-latest}"
+echo "install-decky: downloading Decky Loader $version"
+curl -fsSL "$url" -o "$tmp/PluginLoader"
+
+systemctl stop plugin_loader.service 2>/dev/null || true
+install -d -o "$USER_NAME" -g "$USER_NAME" "$HOMEBREW" "$HOMEBREW/plugins" "$HOMEBREW/services"
+install -m 0755 -o "$USER_NAME" -g "$USER_NAME" "$tmp/PluginLoader" "$HOMEBREW/services/PluginLoader"
+printf '%s\n' "$version" > "$HOMEBREW/services/.loader.version"
+chown "$USER_NAME:$USER_NAME" "$HOMEBREW/services/.loader.version"
+
+install -d -o "$USER_NAME" -g "$USER_NAME" "$STEAM_DIR"
+sudo -u "$USER_NAME" touch "$STEAM_DIR/.cef-enable-remote-debugging"
+
+if [ "$WITH_TDP" = 1 ]; then
+    read -r tdp_version tdp_url < <(release_asset aarron-lee/SimpleDeckyTDP '\.zip$' "${SIMPLEDECKYTDP_VERSION:-latest}")
+    [ -n "${tdp_url:-}" ] || die "no zip asset found for SimpleDeckyTDP release ${SIMPLEDECKYTDP_VERSION:-latest}"
+    echo "install-decky: downloading SimpleDeckyTDP $tdp_version"
+    curl -fsSL "$tdp_url" -o "$tmp/SimpleDeckyTDP.zip"
+    unzip -q "$tmp/SimpleDeckyTDP.zip" -d "$tmp/tdp"
+    [ -f "$tmp/tdp/SimpleDeckyTDP/plugin.json" ] || die "unexpected SimpleDeckyTDP archive layout"
+    rm -rf "$HOMEBREW/plugins/SimpleDeckyTDP"
+    mv "$tmp/tdp/SimpleDeckyTDP" "$HOMEBREW/plugins/"
+    # Owned by root, as the upstream installer does (the plugin runs as root).
+    # It finds /usr/local/bin/ryzenadj (the host helper client) on PATH.
+    chown -R root:root "$HOMEBREW/plugins/SimpleDeckyTDP"
+fi
+
+systemctl start plugin_loader.service
+echo "install-decky: Decky Loader $version started"
+if pgrep -u "$USER_NAME" -x steam >/dev/null; then
+    echo "install-decky: restart Steam once (e.g. Power > Restart Steam) so Decky can attach"
+fi
