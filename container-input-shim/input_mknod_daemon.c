@@ -27,7 +27,10 @@
  *     (HOST_DEV_DIR/input/event5, or HOST_DEV_DIR/hidraw3 for hidraw) as a
  *     fallback.  Host udev sets the owner asynchronously, so creation is
  *     deferred until the chosen host node is owned by GAMER_UID (up to
- *     DEFER_MAX polls, then proceeds with a warning).  Removal unmounts the
+ *     DEFER_MAX polls, then proceeds with a warning).  An input node of a
+ *     HID device also waits (up to DEFER_MAX polls, in both modes) until the
+ *     device's hidraw node is placed, so SDL sees hidraw first and uses
+ *     HIDAPI for it (hid_sibling_pending).  Removal unmounts the
  *     placeholder before unlinking it.  A bind mount pins the inode, so a
  *     later host-side rename does not affect a node that is already bound.
  *
@@ -717,9 +720,16 @@ static void send_udev_event(const char *action, const char *devpath,
  * deferred; they are dropped on success, on giving up, or when the device
  * disappears from sysfs (defer_prune).
  */
+/* Deferral reasons, one entry per device and reason */
+enum defer_family {
+    DEFER_INPUT_OWNER = 0,  /* input node: waiting for host udev ownership */
+    DEFER_HIDRAW_OWNER = 1, /* hidraw node: waiting for host udev ownership */
+    DEFER_HID_SIBLING = 2,  /* input node: waiting for its HID device's hidraw node */
+};
+
 struct defer_entry {
     char name[32];
-    int hidraw;     /* 1 = hidraw family, 0 = input family */
+    int family;     /* enum defer_family */
     int used;
     int seen;       /* deferred during the current scan pass */
     int count;      /* deferrals so far */
@@ -727,21 +737,21 @@ struct defer_entry {
 
 static struct defer_entry defer_tab[DEFER_SLOTS];
 
-static struct defer_entry *defer_lookup(const char *devname, int hidraw) {
+static struct defer_entry *defer_lookup(const char *devname, int family) {
     for (int i = 0; i < DEFER_SLOTS; i++) {
         struct defer_entry *e = &defer_tab[i];
-        if (e->used && e->hidraw == hidraw && strcmp(e->name, devname) == 0)
+        if (e->used && e->family == family && strcmp(e->name, devname) == 0)
             return e;
     }
     return NULL;
 }
 
-static struct defer_entry *defer_alloc(const char *devname, int hidraw) {
+static struct defer_entry *defer_alloc(const char *devname, int family) {
     for (int i = 0; i < DEFER_SLOTS; i++) {
         struct defer_entry *e = &defer_tab[i];
         if (!e->used) {
             snprintf(e->name, sizeof(e->name), "%s", devname);
-            e->hidraw = hidraw;
+            e->family = family;
             e->used = 1;
             e->seen = 0;
             e->count = 0;
@@ -752,10 +762,10 @@ static struct defer_entry *defer_alloc(const char *devname, int hidraw) {
 }
 
 /* End of a scan pass: free this family's entries not deferred in the pass */
-static void defer_prune(int hidraw) {
+static void defer_prune(int family) {
     for (int i = 0; i < DEFER_SLOTS; i++) {
         struct defer_entry *e = &defer_tab[i];
-        if (!e->used || e->hidraw != hidraw)
+        if (!e->used || e->family != family)
             continue;
         if (!e->seen) {
             DBG("dropped deferred %s (gone)", e->name);
@@ -905,7 +915,8 @@ static int should_defer_node(const char *devname, int hidraw,
     struct stat st;
     int ready = (stat(hostpath, &st) == 0 && st.st_uid == gamer_uid);
 
-    struct defer_entry *e = defer_lookup(devname, hidraw);
+    int family = hidraw ? DEFER_HIDRAW_OWNER : DEFER_INPUT_OWNER;
+    struct defer_entry *e = defer_lookup(devname, family);
     if (ready) {
         if (e)
             e->used = 0;
@@ -913,7 +924,7 @@ static int should_defer_node(const char *devname, int hidraw,
     }
 
     if (!e) {
-        e = defer_alloc(devname, hidraw);
+        e = defer_alloc(devname, family);
         if (!e) {
             INFO("deferral table full, not waiting for %s", devname);
             return 0;
@@ -930,6 +941,71 @@ static int should_defer_node(const char *devname, int hidraw,
 
     INFO("WARNING: %s: %s still not owned by uid %u after %d polls, creating anyway",
          devname, hostpath, gamer_uid, DEFER_MAX);
+    e->used = 0;
+    return 0;
+}
+
+/*
+ * Returns 1 if input node devname belongs to a HID device (e.g. a UHID
+ * DualSense) whose hidraw node is not placed in the container yet, so its
+ * creation should wait for a later poll.  SDL (Steam) drives a controller
+ * through HIDAPI only if the hidraw node is there when the evdev node shows
+ * up; otherwise it keeps the evdev path, whose DualSense mapping differs
+ * (Circle confirms in the Steam UI) until the controller reconnects.  Gives
+ * up after DEFER_MAX polls.  Devices without a HID parent (uinput mice,
+ * keyboards, pads) never wait.
+ */
+static int hid_sibling_pending(const char *devname) {
+    char path[PATH_MAX], link[PATH_MAX];
+    /* eventN/device is inputM; inputM/device is the HID device, if any */
+    snprintf(path, sizeof(path), SYSFS_INPUT "/%s/device/device/subsystem", devname);
+    ssize_t n = readlink(path, link, sizeof(link) - 1);
+    if (n <= 0)
+        return 0;
+    link[n] = '\0';
+    const char *sub = strrchr(link, '/');
+    if (strcmp(sub ? sub + 1 : link, "hid") != 0)
+        return 0;
+
+    int placed = 0;
+    snprintf(path, sizeof(path), SYSFS_INPUT "/%s/device/device/hidraw", devname);
+    DIR *d = opendir(path);   /* absent until the kernel connects hidraw */
+    if (d) {
+        struct dirent *ent;
+        while ((ent = readdir(d))) {
+            if (!is_hidraw_device(ent->d_name))
+                continue;
+            char nodepath[PATH_MAX];
+            struct stat st;
+            snprintf(nodepath, sizeof(nodepath), DEV_BASE "/%s", ent->d_name);
+            if (stat(nodepath, &st) == 0 && S_ISCHR(st.st_mode))
+                placed = 1;
+        }
+        closedir(d);
+    }
+
+    struct defer_entry *e = defer_lookup(devname, DEFER_HID_SIBLING);
+    if (placed) {
+        if (e)
+            e->used = 0;
+        return 0;
+    }
+    if (!e) {
+        e = defer_alloc(devname, DEFER_HID_SIBLING);
+        if (!e) {
+            INFO("deferral table full, not waiting for the hidraw node of %s", devname);
+            return 0;
+        }
+    }
+    e->seen = 1;
+    if (e->count < DEFER_MAX) {
+        e->count++;
+        DBG("deferring %s: hidraw node of its HID device not placed yet (%d/%d)",
+            devname, e->count, DEFER_MAX);
+        return 1;
+    }
+    INFO("WARNING: %s: hidraw node of its HID device still missing after %d polls, creating anyway",
+         devname, DEFER_MAX);
     e->used = 0;
     return 0;
 }
@@ -994,6 +1070,8 @@ static void create_input_node(const char *devname) {
     }
 
     if (should_defer_node(devname, 0, maj, min))
+        return;
+    if (hid_sibling_pending(devname))
         return;
 
     /* Ensure /dev/input/ exists */
@@ -1216,7 +1294,8 @@ static int poll_and_sync_input(void) {
         create_input_node(ent->d_name);
     }
     closedir(d);
-    defer_prune(0);
+    defer_prune(DEFER_INPUT_OWNER);
+    defer_prune(DEFER_HID_SIBLING);
 
     /* Pass 2: remove stale nodes whose sysfs entry is gone */
     d = opendir(DEV_INPUT);
@@ -1263,7 +1342,7 @@ static int poll_and_sync_hidraw(void) {
         create_hidraw_node(ent->d_name);
     }
     closedir(d);
-    defer_prune(1);
+    defer_prune(DEFER_HIDRAW_OWNER);
 
     /* Remove stale hidraw nodes — scan /dev for hidraw* and check sysfs */
     d = opendir(DEV_BASE);
@@ -1351,16 +1430,20 @@ int main(void) {
     if (init_udev_netlink() < 0)
         ERR("udev netlink init failed — SDL gamepad discovery may not work");
 
-    /* Initial scan */
-    int ni = poll_and_sync_input();
+    /*
+     * hidraw before input in every pass: a HID controller's evdev node waits
+     * for its hidraw node (hid_sibling_pending), so both usually appear in
+     * the same pass, hidraw first.
+     */
     int nh = poll_and_sync_hidraw();
+    int ni = poll_and_sync_input();
     INFO("initial scan: %d input + %d hidraw container device(s)", ni, nh);
 
     /* Poll loop */
     for (;;) {
         usleep(POLL_INTERVAL_USEC);
-        poll_and_sync_input();
         poll_and_sync_hidraw();
+        poll_and_sync_input();
     }
 
     return 0;
