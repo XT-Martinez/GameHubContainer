@@ -183,6 +183,7 @@ echo "Starting ${NAME} (${MODE_LABEL})"
     --replace \
     --systemd=true \
     --shm-size=1g \
+    --pids-limit="${PIDS_LIMIT:-32768}" \
     "${MODE_ARGS[@]}" \
     -v /sys:/sys:ro \
     "${RYZENADJ_ARGS[@]}" \

@@ -423,6 +423,17 @@ RUN mkdir -p /etc/systemd/user/default.target.wants && \
 
 # ── systemd container tuning ─────────────────────────────────
 
+# systemd's default task limits are percentages of the container's pids limit
+# (15% per unit, 33% per user slice): with podman's default of 2048 that is
+# 307 tasks for Steam's session unit, which Steam's CEF helpers plus a Proton
+# game exceed ("Failed to create thread", then Steam aborts and takes the
+# gamescope session down). The container's own pids limit (run.sh
+# --pids-limit) is the cap instead.
+RUN mkdir -p /etc/systemd/system.conf.d /etc/systemd/user.conf.d /etc/systemd/system/user-.slice.d && \
+    printf '%s\n' '[Manager]' 'DefaultTasksMax=infinity' > /etc/systemd/system.conf.d/10-gamehub-tasks.conf && \
+    printf '%s\n' '[Manager]' 'DefaultTasksMax=infinity' > /etc/systemd/user.conf.d/10-gamehub-tasks.conf && \
+    printf '%s\n' '[Slice]' 'TasksMax=infinity' > /etc/systemd/system/user-.slice.d/10-gamehub-tasks.conf
+
 RUN systemctl mask \
         systemd-remount-fs.service \
         getty@.service \
