@@ -1,0 +1,587 @@
+Vulkan encode: accept RGB input via VK_VALVE_video_encode_rgb_conversion
+
+When the input frames are RGB (e.g. X2BGR10) and the device supports
+VK_VALVE_video_encode_rgb_conversion, the encoder converts them to YCbCr
+itself: the profile chains VkVideoEncodeProfileRgbConversionInfoVALVE,
+the session chains VkVideoEncodeSessionRgbConversionCreateInfoVALVE
+(model, range and chroma siting from the codec context), the input
+picture format is the RGB format and the DPB uses the coded 4:2:0 format
+(NV12 for 8-bit input, P010 for 10-bit). Headers are written for the
+coded format (FFHWBaseEncodeContext.coded_sw_format).
+
+This saves the separate RGB->YUV pass on the GPU's shader cores.
+
+diff --git a/libavcodec/hw_base_encode.c b/libavcodec/hw_base_encode.c
+index 927aeb4bad..e063563cb9 100644
+--- a/libavcodec/hw_base_encode.c
++++ b/libavcodec/hw_base_encode.c
+@@ -740,9 +740,9 @@ int ff_hw_base_get_recon_format(FFHWBaseEncodeContext *ctx, const void *hwconfig
+     recon_format = AV_PIX_FMT_NONE;
+     if (constraints->valid_sw_formats) {
+         for (i = 0; constraints->valid_sw_formats[i] != AV_PIX_FMT_NONE; i++) {
+-            if (ctx->input_frames->sw_format ==
++            if (ctx->coded_sw_format ==
+                 constraints->valid_sw_formats[i]) {
+-                recon_format = ctx->input_frames->sw_format;
++                recon_format = ctx->coded_sw_format;
+                 break;
+             }
+         }
+@@ -753,7 +753,7 @@ int ff_hw_base_get_recon_format(FFHWBaseEncodeContext *ctx, const void *hwconfig
+         }
+     } else {
+         // No idea what to use; copy input format.
+-        recon_format = ctx->input_frames->sw_format;
++        recon_format = ctx->coded_sw_format;
+     }
+     av_log(ctx->log_ctx, AV_LOG_DEBUG, "Using %s as format of "
+            "reconstructed frames.\n", av_get_pix_fmt_name(recon_format));
+@@ -797,6 +797,7 @@ int ff_hw_base_encode_init(AVCodecContext *avctx, FFHWBaseEncodeContext *ctx)
+         return AVERROR(ENOMEM);
+ 
+     ctx->input_frames = (AVHWFramesContext *)ctx->input_frames_ref->data;
++    ctx->coded_sw_format = ctx->input_frames->sw_format;
+ 
+     ctx->device_ref = av_buffer_ref(ctx->input_frames->device_ref);
+     if (!ctx->device_ref)
+diff --git a/libavcodec/hw_base_encode.h b/libavcodec/hw_base_encode.h
+index e768579722..3055dcac29 100644
+--- a/libavcodec/hw_base_encode.h
++++ b/libavcodec/hw_base_encode.h
+@@ -152,6 +152,10 @@ typedef struct FFHWBaseEncodeContext {
+     AVBufferRef    *input_frames_ref;
+     AVHWFramesContext *input_frames;
+ 
++    // Format of the coded pictures. Normally the input frames' sw_format;
++    // differs when the hardware converts the input (e.g. RGB to YUV).
++    enum AVPixelFormat coded_sw_format;
++
+     // The hardware frame context containing the reconstructed frames.
+     AVBufferRef    *recon_frames_ref;
+     AVHWFramesContext *recon_frames;
+diff --git a/libavcodec/hw_base_encode_h264.c b/libavcodec/hw_base_encode_h264.c
+index 03c79ab6c1..f810a0f3a5 100644
+--- a/libavcodec/hw_base_encode_h264.c
++++ b/libavcodec/hw_base_encode_h264.c
+@@ -36,7 +36,7 @@ int ff_hw_base_encode_init_params_h264(FFHWBaseEncodeContext *base_ctx,
+     memset(sps, 0, sizeof(*sps));
+     memset(pps, 0, sizeof(*pps));
+ 
+-    desc = av_pix_fmt_desc_get(base_ctx->input_frames->sw_format);
++    desc = av_pix_fmt_desc_get(base_ctx->coded_sw_format);
+     av_assert0(desc);
+     if (desc->nb_components == 1 || desc->log2_chroma_w != 1 || desc->log2_chroma_h != 1) {
+         av_log(avctx, AV_LOG_ERROR, "Chroma format of input pixel format "
+diff --git a/libavcodec/hw_base_encode_h265.c b/libavcodec/hw_base_encode_h265.c
+index dceec8aba9..8bf0e08956 100644
+--- a/libavcodec/hw_base_encode_h265.c
++++ b/libavcodec/hw_base_encode_h265.c
+@@ -42,7 +42,7 @@ int ff_hw_base_encode_init_params_h265(FFHWBaseEncodeContext *base_ctx,
+     memset(sps, 0, sizeof(*sps));
+     memset(pps, 0, sizeof(*pps));
+ 
+-    desc = av_pix_fmt_desc_get(base_ctx->input_frames->sw_format);
++    desc = av_pix_fmt_desc_get(base_ctx->coded_sw_format);
+     av_assert0(desc);
+     if (desc->nb_components == 1) {
+         chroma_format = 0;
+diff --git a/libavcodec/vulkan_encode.c b/libavcodec/vulkan_encode.c
+index 5898191686..c30b3dae66 100644
+--- a/libavcodec/vulkan_encode.c
++++ b/libavcodec/vulkan_encode.c
+@@ -601,6 +601,140 @@ int ff_vulkan_encode_receive_packet(AVCodecContext *avctx, AVPacket *pkt)
+     return ff_hw_base_encode_receive_packet(&ctx->base, avctx, pkt);
+ }
+ 
++#ifdef VK_VALVE_video_encode_rgb_conversion
++/* Choose the RGB->YCbCr conversion the encoder performs for RGB input,
++ * from the stream's colorspace, range and chroma siting. */
++static int vulkan_encode_init_rgb_conversion(AVCodecContext *avctx,
++                                             FFVulkanEncodeContext *ctx,
++                                             const VkVideoEncodeRgbConversionCapabilitiesVALVE *caps)
++{
++    VkVideoEncodeRgbModelConversionFlagBitsVALVE model;
++    VkVideoEncodeRgbRangeCompressionFlagBitsVALVE range;
++    VkVideoEncodeRgbChromaOffsetFlagBitsVALVE x_off, y_off;
++
++    switch (avctx->colorspace) {
++    case AVCOL_SPC_BT2020_NCL:
++        model = VK_VIDEO_ENCODE_RGB_MODEL_CONVERSION_YCBCR_2020_BIT_VALVE;
++        break;
++    case AVCOL_SPC_BT470BG:
++    case AVCOL_SPC_SMPTE170M:
++        model = VK_VIDEO_ENCODE_RGB_MODEL_CONVERSION_YCBCR_601_BIT_VALVE;
++        break;
++    case AVCOL_SPC_BT709:
++    case AVCOL_SPC_UNSPECIFIED:
++        model = VK_VIDEO_ENCODE_RGB_MODEL_CONVERSION_YCBCR_709_BIT_VALVE;
++        break;
++    default:
++        av_log(avctx, AV_LOG_ERROR, "RGB input: colorspace %s has no "
++               "matching conversion model\n", av_color_space_name(avctx->colorspace));
++        return AVERROR(EINVAL);
++    }
++
++    range = avctx->color_range == AVCOL_RANGE_JPEG ?
++            VK_VIDEO_ENCODE_RGB_RANGE_COMPRESSION_FULL_RANGE_BIT_VALVE :
++            VK_VIDEO_ENCODE_RGB_RANGE_COMPRESSION_NARROW_RANGE_BIT_VALVE;
++
++    /* Chroma is cosited horizontally for both LEFT (MPEG-2, the default)
++     * and TOPLEFT siting; they differ vertically. */
++    x_off = VK_VIDEO_ENCODE_RGB_CHROMA_OFFSET_COSITED_EVEN_BIT_VALVE;
++    y_off = avctx->chroma_sample_location == AVCHROMA_LOC_TOPLEFT ?
++            VK_VIDEO_ENCODE_RGB_CHROMA_OFFSET_COSITED_EVEN_BIT_VALVE :
++            VK_VIDEO_ENCODE_RGB_CHROMA_OFFSET_MIDPOINT_BIT_VALVE;
++    if (!(caps->xChromaOffsets & x_off))
++        x_off = VK_VIDEO_ENCODE_RGB_CHROMA_OFFSET_MIDPOINT_BIT_VALVE;
++    if (!(caps->yChromaOffsets & y_off))
++        y_off = y_off == VK_VIDEO_ENCODE_RGB_CHROMA_OFFSET_MIDPOINT_BIT_VALVE ?
++                VK_VIDEO_ENCODE_RGB_CHROMA_OFFSET_COSITED_EVEN_BIT_VALVE :
++                VK_VIDEO_ENCODE_RGB_CHROMA_OFFSET_MIDPOINT_BIT_VALVE;
++
++    if (!(caps->rgbModels & model) || !(caps->rgbRanges & range) ||
++        !(caps->xChromaOffsets & x_off) || !(caps->yChromaOffsets & y_off)) {
++        av_log(avctx, AV_LOG_ERROR, "RGB input: conversion to %s (%s range) "
++               "is not supported by the device (models 0x%x, ranges 0x%x)\n",
++               av_color_space_name(avctx->colorspace),
++               av_color_range_name(avctx->color_range),
++               caps->rgbModels, caps->rgbRanges);
++        return AVERROR(ENOTSUP);
++    }
++
++    ctx->rgb_session = (VkVideoEncodeSessionRgbConversionCreateInfoVALVE) {
++        .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_SESSION_RGB_CONVERSION_CREATE_INFO_VALVE,
++        .rgbModel = model,
++        .rgbRange = range,
++        .xChromaOffset = x_off,
++        .yChromaOffset = y_off,
++    };
++
++    return 0;
++}
++#endif
++
++/* Find the first format the device supports for the given usage that maps to
++ * pix_fmt (or, if vk_fmt is set, that equals vk_fmt). */
++static int vulkan_encode_pick_format(AVCodecContext *avctx, FFVulkanEncodeContext *ctx,
++                                     VkImageUsageFlags usage, enum AVPixelFormat pix_fmt,
++                                     VkFormat vk_fmt, VkFormat *out)
++{
++    VkResult ret;
++    FFVulkanFunctions *vk = &ctx->s.vkfn;
++    VkVideoFormatPropertiesKHR *ret_info;
++    uint32_t nb_out_fmts = 0;
++    VkPhysicalDeviceVideoFormatInfoKHR fmt_info = {
++        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VIDEO_FORMAT_INFO_KHR,
++        .pNext = &ctx->profile_list,
++        .imageUsage = usage,
++    };
++    int i;
++
++    ret = vk->GetPhysicalDeviceVideoFormatPropertiesKHR(ctx->s.hwctx->phys_dev,
++                                                        &fmt_info, &nb_out_fmts, NULL);
++    if (ret == VK_ERROR_FORMAT_NOT_SUPPORTED ||
++        (!nb_out_fmts && ret == VK_SUCCESS)) {
++        return AVERROR(EINVAL);
++    } else if (ret != VK_SUCCESS) {
++        av_log(avctx, AV_LOG_ERROR, "Unable to get Vulkan format properties: %s!\n",
++               ff_vk_ret2str(ret));
++        return AVERROR_EXTERNAL;
++    }
++
++    ret_info = av_mallocz(sizeof(*ret_info)*nb_out_fmts);
++    if (!ret_info)
++        return AVERROR(ENOMEM);
++
++    for (i = 0; i < nb_out_fmts; i++)
++        ret_info[i].sType = VK_STRUCTURE_TYPE_VIDEO_FORMAT_PROPERTIES_KHR;
++
++    ret = vk->GetPhysicalDeviceVideoFormatPropertiesKHR(ctx->s.hwctx->phys_dev,
++                                                        &fmt_info, &nb_out_fmts, ret_info);
++    if (ret != VK_SUCCESS || !nb_out_fmts) {
++        av_free(ret_info);
++        return ret == VK_SUCCESS || ret == VK_ERROR_FORMAT_NOT_SUPPORTED ?
++               AVERROR(EINVAL) : AVERROR_EXTERNAL;
++    }
++
++    av_log(avctx, AV_LOG_VERBOSE, "Supported formats for usage 0x%x:\n", usage);
++    for (i = 0; i < nb_out_fmts; i++)
++        av_log(avctx, AV_LOG_VERBOSE, "    %i: %i\n", i, ret_info[i].format);
++
++    for (i = 0; i < nb_out_fmts; i++) {
++        if (vk_fmt ? ret_info[i].format == vk_fmt :
++                     ff_vk_pix_fmt_from_vkfmt(ret_info[i].format) == pix_fmt) {
++            *out = ret_info[i].format;
++            break;
++        }
++    }
++
++    av_free(ret_info);
++
++    if (i == nb_out_fmts) {
++        av_log(avctx, AV_LOG_ERROR, "Pixel format %s of input frames not supported!\n",
++               av_get_pix_fmt_name(pix_fmt));
++        return AVERROR(EINVAL);
++    }
++
++    return 0;
++}
++
+ static int vulkan_encode_create_dpb(AVCodecContext *avctx, FFVulkanEncodeContext *ctx)
+ {
+     int err;
+@@ -767,8 +901,6 @@ av_cold int ff_vulkan_encode_init(AVCodecContext *avctx, FFVulkanEncodeContext *
+ 
+     const AVPixFmtDescriptor *desc;
+ 
+-    VkVideoFormatPropertiesKHR *ret_info;
+-    uint32_t nb_out_fmts = 0;
+     const uint32_t feedback_flags = VK_VIDEO_ENCODE_FEEDBACK_BITSTREAM_BUFFER_OFFSET_BIT_KHR |
+                                     VK_VIDEO_ENCODE_FEEDBACK_BITSTREAM_BYTES_WRITTEN_BIT_KHR;
+ 
+@@ -779,11 +911,6 @@ av_cold int ff_vulkan_encode_init(AVCodecContext *avctx, FFVulkanEncodeContext *
+     VkVideoSessionCreateInfoKHR session_create = {
+         .sType = VK_STRUCTURE_TYPE_VIDEO_SESSION_CREATE_INFO_KHR,
+     };
+-    VkPhysicalDeviceVideoFormatInfoKHR fmt_info = {
+-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VIDEO_FORMAT_INFO_KHR,
+-        .pNext = &ctx->profile_list,
+-    };
+-
+     if (!avctx->hw_frames_ctx) {
+         av_log(avctx, AV_LOG_ERROR, "A hardware frames reference is "
+                "required to associate the encoding device.\n");
+@@ -847,6 +974,38 @@ av_cold int ff_vulkan_encode_init(AVCodecContext *avctx, FFVulkanEncodeContext *
+         .tuningMode        = ctx->opts.tune,
+     };
+ 
++    /* RGB input frames: the encoder converts them to YCbCr itself
++     * (VK_VALVE_video_encode_rgb_conversion); the coded format is 4:2:0. */
++    {
++        const AVPixFmtDescriptor *in_desc = av_pix_fmt_desc_get(s->frames->sw_format);
++        ctx->coded_sw_format = s->frames->sw_format;
++        ctx->rgb_input = in_desc && (in_desc->flags & AV_PIX_FMT_FLAG_RGB);
++        if (ctx->rgb_input) {
++#ifdef VK_VALVE_video_encode_rgb_conversion
++            if (!(s->extensions & FF_VK_EXT_VIDEO_ENCODE_RGB_CONV)) {
++                av_log(avctx, AV_LOG_ERROR, "RGB input (%s) needs the %s extension\n",
++                       av_get_pix_fmt_name(s->frames->sw_format),
++                       VK_VALVE_VIDEO_ENCODE_RGB_CONVERSION_EXTENSION_NAME);
++                return AVERROR(ENOSYS);
++            }
++            ctx->coded_sw_format = in_desc->comp[0].depth > 8 ? AV_PIX_FMT_P010 :
++                                                                AV_PIX_FMT_NV12;
++            desc = av_pix_fmt_desc_get(ctx->coded_sw_format);
++            ctx->rgb_profile = (VkVideoEncodeProfileRgbConversionInfoVALVE) {
++                .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_PROFILE_RGB_CONVERSION_INFO_VALVE,
++                .performEncodeRgbConversion = VK_TRUE,
++            };
++            ctx->usage_info.pNext = &ctx->rgb_profile;
++            av_log(avctx, AV_LOG_VERBOSE, "RGB input %s, coded as %s\n",
++                   av_get_pix_fmt_name(s->frames->sw_format),
++                   av_get_pix_fmt_name(ctx->coded_sw_format));
++#else
++            av_log(avctx, AV_LOG_ERROR, "RGB input is not supported in this build\n");
++            return AVERROR(ENOSYS);
++#endif
++        }
++    }
++
+     /* Load up the profile now, needed for caps and to create a query pool */
+     ctx->profile.sType               = VK_STRUCTURE_TYPE_VIDEO_PROFILE_INFO_KHR;
+     ctx->profile.pNext               = &ctx->usage_info;
+@@ -870,9 +1029,26 @@ av_cold int ff_vulkan_encode_init(AVCodecContext *avctx, FFVulkanEncodeContext *
+     ctx->caps.sType = VK_STRUCTURE_TYPE_VIDEO_CAPABILITIES_KHR;
+     ctx->caps.pNext = &ctx->enc_caps;
+ 
++#ifdef VK_VALVE_video_encode_rgb_conversion
++    VkVideoEncodeRgbConversionCapabilitiesVALVE rgb_caps = {
++        .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_RGB_CONVERSION_CAPABILITIES_VALVE,
++        .pNext = ctx->caps.pNext,
++    };
++    if (ctx->rgb_input)
++        ctx->caps.pNext = &rgb_caps;
++#endif
++
+     ret = vk->GetPhysicalDeviceVideoCapabilitiesKHR(s->hwctx->phys_dev,
+                                                     &ctx->profile,
+                                                     &ctx->caps);
++#ifdef VK_VALVE_video_encode_rgb_conversion
++    ctx->caps.pNext = &ctx->enc_caps;
++    if (ctx->rgb_input && ret == VK_SUCCESS) {
++        err = vulkan_encode_init_rgb_conversion(avctx, ctx, &rgb_caps);
++        if (err < 0)
++            return err;
++    }
++#endif
+     if (ret == VK_ERROR_VIDEO_PROFILE_OPERATION_NOT_SUPPORTED_KHR) {
+         av_log(avctx, AV_LOG_ERROR, "Unable to initialize encoding: "
+                "%s profile \"%s\" not supported!\n",
+@@ -996,61 +1172,23 @@ av_cold int ff_vulkan_encode_init(AVCodecContext *avctx, FFVulkanEncodeContext *
+         return AVERROR(EINVAL);
+     }
+ 
+-    fmt_info.imageUsage = VK_IMAGE_USAGE_VIDEO_ENCODE_DPB_BIT_KHR;
+-
+     ctx->common.layered_dpb = !(ctx->caps.flags & VK_VIDEO_CAPABILITY_SEPARATE_REFERENCE_IMAGES_BIT_KHR);
+ 
+-    /* Get the supported image formats */
+-    ret = vk->GetPhysicalDeviceVideoFormatPropertiesKHR(s->hwctx->phys_dev,
+-                                                        &fmt_info,
+-                                                        &nb_out_fmts, NULL);
+-    if (ret == VK_ERROR_FORMAT_NOT_SUPPORTED ||
+-        (!nb_out_fmts && ret == VK_SUCCESS)) {
+-        return AVERROR(EINVAL);
+-    } else if (ret != VK_SUCCESS) {
+-        av_log(avctx, AV_LOG_ERROR, "Unable to get Vulkan format properties: %s!\n",
+-               ff_vk_ret2str(ret));
+-        return AVERROR_EXTERNAL;
+-    }
+-
+-    ret_info = av_mallocz(sizeof(*ret_info)*nb_out_fmts);
+-    if (!ret_info)
+-        return AVERROR(ENOMEM);
+-
+-    for (int i = 0; i < nb_out_fmts; i++)
+-        ret_info[i].sType = VK_STRUCTURE_TYPE_VIDEO_FORMAT_PROPERTIES_KHR;
+-
+-    ret = vk->GetPhysicalDeviceVideoFormatPropertiesKHR(s->hwctx->phys_dev,
+-                                                        &fmt_info,
+-                                                        &nb_out_fmts, ret_info);
+-    if (ret == VK_ERROR_FORMAT_NOT_SUPPORTED ||
+-        (!nb_out_fmts && ret == VK_SUCCESS)) {
+-        av_free(ret_info);
+-        return AVERROR(EINVAL);
+-    } else if (ret != VK_SUCCESS) {
+-        av_log(avctx, AV_LOG_ERROR, "Unable to get Vulkan format properties: %s!\n",
+-               ff_vk_ret2str(ret));
+-        av_free(ret_info);
+-        return AVERROR_EXTERNAL;
+-    }
+-
+-    av_log(avctx, AV_LOG_VERBOSE, "Supported input formats:\n");
+-    for (i = 0; i < nb_out_fmts; i++)
+-        av_log(avctx, AV_LOG_VERBOSE, "    %i: %i\n", i, ret_info[i].format);
+-
+-    for (i = 0; i < nb_out_fmts; i++) {
+-        if (ff_vk_pix_fmt_from_vkfmt(ret_info[i].format) == s->frames->sw_format) {
+-            ctx->pic_format = ret_info[i].format;
+-            break;
+-        }
+-    }
+-
+-    av_free(ret_info);
++    /* Reconstructed pictures use the coded format */
++    err = vulkan_encode_pick_format(avctx, ctx, VK_IMAGE_USAGE_VIDEO_ENCODE_DPB_BIT_KHR,
++                                    ctx->coded_sw_format, VK_FORMAT_UNDEFINED,
++                                    &ctx->pic_format);
++    if (err < 0)
++        return err;
+ 
+-    if (i == nb_out_fmts) {
+-        av_log(avctx, AV_LOG_ERROR, "Pixel format %s of input frames not supported!\n",
+-               av_get_pix_fmt_name(s->frames->sw_format));
+-        return AVERROR(EINVAL);
++    /* Input pictures: the same format, unless the encoder converts RGB */
++    ctx->src_format = ctx->pic_format;
++    if (ctx->rgb_input) {
++        err = vulkan_encode_pick_format(avctx, ctx, VK_IMAGE_USAGE_VIDEO_ENCODE_SRC_BIT_KHR,
++                                        s->frames->sw_format, s->hwfc->format[0],
++                                        &ctx->src_format);
++        if (err < 0)
++            return err;
+     }
+ 
+     /* Create session */
+@@ -1060,8 +1198,12 @@ av_cold int ff_vulkan_encode_init(AVCodecContext *avctx, FFVulkanEncodeContext *
+     session_create.maxCodedExtent = ctx->caps.maxCodedExtent;
+     session_create.maxDpbSlots = ctx->caps.maxDpbSlots;
+     session_create.maxActiveReferencePictures = ctx->caps.maxActiveReferencePictures;
+-    session_create.pictureFormat = ctx->pic_format;
+-    session_create.referencePictureFormat = session_create.pictureFormat;
++    session_create.pictureFormat = ctx->src_format;
++    session_create.referencePictureFormat = ctx->pic_format;
++#ifdef VK_VALVE_video_encode_rgb_conversion
++    if (ctx->rgb_input)
++        session_create.pNext = &ctx->rgb_session;
++#endif
+     session_create.pStdHeaderVersion = &vk_desc->ext_props;
+ 
+     err = ff_vk_video_common_init(avctx, s, &ctx->common, &session_create);
+@@ -1071,6 +1213,7 @@ av_cold int ff_vulkan_encode_init(AVCodecContext *avctx, FFVulkanEncodeContext *
+     err = ff_hw_base_encode_init(avctx, &ctx->base);
+     if (err < 0)
+         return err;
++    ctx->base.coded_sw_format = ctx->coded_sw_format;
+ 
+     err = vulkan_encode_create_dpb(avctx, ctx);
+     if (err < 0)
+diff --git a/libavcodec/vulkan_encode.h b/libavcodec/vulkan_encode.h
+index 23c35898c1..6e44f548f9 100644
+--- a/libavcodec/vulkan_encode.h
++++ b/libavcodec/vulkan_encode.h
+@@ -181,7 +181,17 @@ typedef struct FFVulkanEncodeContext {
+ 
+     AVBufferPool *buf_pool;
+ 
+-    VkFormat pic_format;
++    VkFormat pic_format; /* DPB (reconstructed picture) format */
++    VkFormat src_format; /* Encode input format */
++
++    /* Format of the coded pictures: the input frames' sw_format, or NV12/P010
++     * when the encoder converts RGB input (VK_VALVE_video_encode_rgb_conversion). */
++    enum AVPixelFormat coded_sw_format;
++    int rgb_input;
++#ifdef VK_VALVE_video_encode_rgb_conversion
++    VkVideoEncodeProfileRgbConversionInfoVALVE rgb_profile;
++    VkVideoEncodeSessionRgbConversionCreateInfoVALVE rgb_session;
++#endif
+ 
+     FFVkEncodeCommonOptions opts;
+ 
+diff --git a/libavcodec/vulkan_encode_av1.c b/libavcodec/vulkan_encode_av1.c
+index ef8c6b0fc1..8341fa393b 100644
+--- a/libavcodec/vulkan_encode_av1.c
++++ b/libavcodec/vulkan_encode_av1.c
+@@ -616,12 +616,12 @@ static int init_profile(AVCodecContext *avctx,
+     };
+     int nb_profiles = FF_ARRAY_ELEMS(known_profiles);
+ 
+-    const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(s->frames->sw_format);
++    const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(ctx->coded_sw_format);
+     if (!desc)
+         return AVERROR(EINVAL);
+ 
+-    if (s->frames->sw_format == AV_PIX_FMT_NV12 ||
+-        s->frames->sw_format == AV_PIX_FMT_P010)
++    if (ctx->coded_sw_format == AV_PIX_FMT_NV12 ||
++        ctx->coded_sw_format == AV_PIX_FMT_P010)
+         nb_profiles = 1;
+ 
+     enc->profile = (VkVideoEncodeAV1ProfileInfoKHR) {
+@@ -746,7 +746,7 @@ static av_cold int init_sequence_headers(AVCodecContext *avctx)
+     AV1RawOBU *seq_obu = &enc->seq_hdr_obu;
+     AV1RawSequenceHeader *seq = &seq_obu->obu.sequence_header;
+ 
+-    const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(s->frames->sw_format);
++    const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(ctx->coded_sw_format);
+     if (!desc)
+         return AVERROR(EINVAL);
+ 
+diff --git a/libavcodec/vulkan_encode_h264.c b/libavcodec/vulkan_encode_h264.c
+index 4976dba482..fcd46c09a6 100644
+--- a/libavcodec/vulkan_encode_h264.c
++++ b/libavcodec/vulkan_encode_h264.c
+@@ -706,7 +706,7 @@ static int init_profile(AVCodecContext *avctx,
+     };
+     int nb_profiles = FF_ARRAY_ELEMS(known_profiles);
+ 
+-    const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(s->frames->sw_format);
++    const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(ctx->coded_sw_format);
+     if (!desc)
+         return AVERROR(EINVAL);
+ 
+diff --git a/libavcodec/vulkan_encode_h265.c b/libavcodec/vulkan_encode_h265.c
+index f4d71a15ab..9d2a6d5783 100644
+--- a/libavcodec/vulkan_encode_h265.c
++++ b/libavcodec/vulkan_encode_h265.c
+@@ -620,13 +620,13 @@ static int init_profile(AVCodecContext *avctx,
+     };
+     int nb_profiles = FF_ARRAY_ELEMS(known_profiles);
+ 
+-    const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(s->frames->sw_format);
++    const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(ctx->coded_sw_format);
+     if (!desc)
+         return AVERROR(EINVAL);
+ 
+-    if (s->frames->sw_format == AV_PIX_FMT_NV12)
++    if (ctx->coded_sw_format == AV_PIX_FMT_NV12)
+         nb_profiles = 1;
+-    else if (s->frames->sw_format == AV_PIX_FMT_P010)
++    else if (ctx->coded_sw_format == AV_PIX_FMT_P010)
+         nb_profiles = 2;
+ 
+     enc->profile = (VkVideoEncodeH265ProfileInfoKHR) {
+diff --git a/libavcodec/vulkan_video.c b/libavcodec/vulkan_video.c
+index 674a0fdc3b..c883521f1b 100644
+--- a/libavcodec/vulkan_video.c
++++ b/libavcodec/vulkan_video.c
+@@ -44,6 +44,7 @@ static const struct FFVkFormatMapEntry {
+     { VK_FORMAT_B8G8R8A8_UNORM,           AV_PIX_FMT_BGR0,    VK_IMAGE_ASPECT_COLOR_BIT },
+     { VK_FORMAT_R8G8B8A8_UNORM,           AV_PIX_FMT_RGB0,    VK_IMAGE_ASPECT_COLOR_BIT },
+     { VK_FORMAT_A2R10G10B10_UNORM_PACK32, AV_PIX_FMT_X2RGB10, VK_IMAGE_ASPECT_COLOR_BIT },
++    { VK_FORMAT_A2B10G10R10_UNORM_PACK32, AV_PIX_FMT_X2BGR10, VK_IMAGE_ASPECT_COLOR_BIT },
+ 
+     /* Planar RGB */
+     { VK_FORMAT_R8_UNORM,   AV_PIX_FMT_GBRAP,    VK_IMAGE_ASPECT_COLOR_BIT },
+diff --git a/libavutil/hwcontext_vulkan.c b/libavutil/hwcontext_vulkan.c
+index 90d3d14dbb..2503247f77 100644
+--- a/libavutil/hwcontext_vulkan.c
++++ b/libavutil/hwcontext_vulkan.c
+@@ -109,6 +109,9 @@ typedef struct VulkanDeviceFeatures {
+ #ifdef VK_KHR_video_encode_av1
+     VkPhysicalDeviceVideoEncodeAV1FeaturesKHR av1_encode;
+ #endif
++#ifdef VK_VALVE_video_encode_rgb_conversion
++    VkPhysicalDeviceVideoEncodeRgbConversionFeaturesVALVE rgb_conversion;
++#endif
+ 
+     VkPhysicalDeviceShaderObjectFeaturesEXT shader_object;
+     VkPhysicalDeviceCooperativeMatrixFeaturesKHR cooperative_matrix;
+@@ -279,6 +282,10 @@ static void device_features_init(AVHWDeviceContext *ctx, VulkanDeviceFeatures *f
+     FF_VK_STRUCT_EXT(s, &feats->device, &feats->av1_encode, FF_VK_EXT_VIDEO_ENCODE_AV1,
+                      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VIDEO_ENCODE_AV1_FEATURES_KHR);
+ #endif
++#ifdef VK_VALVE_video_encode_rgb_conversion
++    FF_VK_STRUCT_EXT(s, &feats->device, &feats->rgb_conversion, FF_VK_EXT_VIDEO_ENCODE_RGB_CONV,
++                     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VIDEO_ENCODE_RGB_CONVERSION_FEATURES_VALVE);
++#endif
+ 
+     FF_VK_STRUCT_EXT(s, &feats->device, &feats->shader_object, FF_VK_EXT_SHADER_OBJECT,
+                      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT);
+@@ -382,6 +389,9 @@ static void device_features_copy_needed(VulkanDeviceFeatures *dst, VulkanDeviceF
+ #ifdef VK_KHR_video_encode_av1
+     COPY_VAL(av1_encode.videoEncodeAV1);
+ #endif
++#ifdef VK_VALVE_video_encode_rgb_conversion
++    COPY_VAL(rgb_conversion.videoEncodeRgbConversion);
++#endif
+ 
+     COPY_VAL(shader_object.shaderObject);
+ 
+@@ -755,6 +765,9 @@ static const VulkanOptExtension optional_device_exts[] = {
+ #endif
+ #ifdef VK_KHR_video_encode_av1
+     { VK_KHR_VIDEO_ENCODE_AV1_EXTENSION_NAME,                 FF_VK_EXT_VIDEO_ENCODE_AV1       },
++#endif
++#ifdef VK_VALVE_video_encode_rgb_conversion
++    { VK_VALVE_VIDEO_ENCODE_RGB_CONVERSION_EXTENSION_NAME,    FF_VK_EXT_VIDEO_ENCODE_RGB_CONV  },
+ #endif
+     { VK_KHR_VIDEO_DECODE_AV1_EXTENSION_NAME,                 FF_VK_EXT_VIDEO_DECODE_AV1       },
+ };
+diff --git a/libavutil/vulkan_functions.h b/libavutil/vulkan_functions.h
+index 86dff046b2..618d68f0ac 100644
+--- a/libavutil/vulkan_functions.h
++++ b/libavutil/vulkan_functions.h
+@@ -70,6 +70,7 @@ typedef uint64_t FFVulkanExtensions;
+ #define FF_VK_EXT_VIDEO_ENCODE_H264      (1ULL << 51) /* VK_KHR_video_encode_h264 */
+ #define FF_VK_EXT_VIDEO_ENCODE_H265      (1ULL << 52) /* VK_KHR_video_encode_h265 */
+ #define FF_VK_EXT_VIDEO_ENCODE_AV1       (1ULL << 53) /* VK_KHR_video_encode_av1 */
++#define FF_VK_EXT_VIDEO_ENCODE_RGB_CONV  (1ULL << 54) /* VK_VALVE_video_encode_rgb_conversion */
+ 
+ #define FF_VK_EXT_PORTABILITY_SUBSET     (1ULL << 62)
+ #define FF_VK_EXT_NO_FLAG                (1ULL << 63)
+diff --git a/libavutil/vulkan_loader.h b/libavutil/vulkan_loader.h
+index 7ea359b6cd..be64aa9b96 100644
+--- a/libavutil/vulkan_loader.h
++++ b/libavutil/vulkan_loader.h
+@@ -96,6 +96,9 @@ static inline uint64_t ff_vk_extensions_to_mask(const char * const *extensions,
+ #ifdef VK_KHR_video_encode_av1
+         { VK_KHR_VIDEO_ENCODE_AV1_EXTENSION_NAME,          FF_VK_EXT_VIDEO_ENCODE_AV1       },
+ #endif
++#ifdef VK_VALVE_video_encode_rgb_conversion
++        { VK_VALVE_VIDEO_ENCODE_RGB_CONVERSION_EXTENSION_NAME, FF_VK_EXT_VIDEO_ENCODE_RGB_CONV },
++#endif
+ #ifdef VK_KHR_internally_synchronized_queues
+         { VK_KHR_INTERNALLY_SYNCHRONIZED_QUEUES_EXTENSION_NAME, FF_VK_EXT_INTERNAL_QUEUE_SYNC   },
+ #endif

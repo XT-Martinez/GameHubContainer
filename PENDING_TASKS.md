@@ -36,6 +36,15 @@ isolation, submodules rebased onto upstream).
 - **`/dev/uhid`** is now loaded at boot and `0666` (section 1 below kept for
   reference on other hosts).
 
+- **Encoder RGB input** (2026-10-22). Opt-in `SUNSHINE_VK_RGB_DIRECT=1` +
+  `GAMESCOPE_UNCOMPRESSED_OUTPUT=1`: the Vulkan encoder converts gamescope's
+  RGB output on the video engine instead of Sunshine's compute shader. HDR
+  streaming verified (AV1, colours correct); host processing latency under
+  GPU load went from 4.5 ms avg / 8 ms max to 2.2 ms / 3.8 ms. See README.
+- **Stuttery cursor** (2026-10-22). Cursor-only repaints were composited but
+  never exported, because headless libinput motion doesn't bump
+  `inputCounter`; scanout export now also sends after any compositor paint.
+
 ## 1. Host setup: `/dev/uhid`
 
 `/dev/uhid` on the host is still `root 0600` (the `uhid` module was not loaded
@@ -56,7 +65,15 @@ sudo modprobe uhid && echo uhid | sudo tee /etc/modules-load.d/uhid.conf && sudo
 - Default ports 47984-48010 are taken by the host (linuxbrew) Sunshine, so
   instance 1 cannot start while it runs. Testing used `./run.sh 2 57989`.
 
+- Encoder RGB input: verify the cursor-repaint fix in a low-FPS Steam page,
+  and try HEVC HDR and 10-bit SDR.
+
 ## 3. Known limitations (accepted for now)
+
+- Encoder RGB input: no explicit sync with gamescope's reuse of its three
+  output images (it relies on Sunshine encoding one frame at a time), 8-bit
+  streams keep the compute path, and Sunshine's separate cursor image is not
+  drawn (gamescope already composites the cursor).
 
 - Rootless cannot do realtime scheduling; `rtkit-daemon` is skipped
   (`ConditionCapability=CAP_SYS_NICE`).

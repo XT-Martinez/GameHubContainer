@@ -6,8 +6,8 @@ After=systemd-tmpfiles-setup.service
 
 [Service]
 Type=oneshot
-PassEnvironment=SUNSHINE_PORT CONTAINER_ID SCREEN_WIDTH SCREEN_HEIGHT CUSTOM_REFRESH_RATES SUNSHINE_MAC_ADDRESS GS_ENABLE_CTRL_12 SUNSHINE_CSRF_ORIGINS STEAM_LIBRARY_PATH
-ExecStart=/bin/bash -c 'set -euo pipefail; { printenv | grep -E "^(SUNSHINE_PORT|CONTAINER_ID|SCREEN_WIDTH|SCREEN_HEIGHT|CUSTOM_REFRESH_RATES|SUNSHINE_MAC_ADDRESS|GS_ENABLE_CTRL_12|SUNSHINE_CSRF_ORIGINS|STEAM_LIBRARY_PATH)=" || true; } > /run/container.env; if ! grep -q "^SUNSHINE_MAC_ADDRESS=" /run/container.env; then id="${CONTAINER_ID:-default}"; mac="$(echo -n "$id" | md5sum | sed "s/^\\(..\\)\\(..\\)\\(..\\)\\(..\\)\\(..\\).*$/02:\\1:\\2:\\3:\\4:\\5/")"; echo "SUNSHINE_MAC_ADDRESS=$mac" >> /run/container.env; fi; chmod 644 /run/container.env; echo "[container-env] wrote /run/container.env"'
+PassEnvironment=SUNSHINE_PORT CONTAINER_ID SCREEN_WIDTH SCREEN_HEIGHT CUSTOM_REFRESH_RATES SUNSHINE_MAC_ADDRESS GS_ENABLE_CTRL_12 SUNSHINE_CSRF_ORIGINS STEAM_LIBRARY_PATH SUNSHINE_VK_RGB_DIRECT GAMESCOPE_UNCOMPRESSED_OUTPUT
+ExecStart=/bin/bash -c 'set -euo pipefail; { printenv | grep -E "^(SUNSHINE_PORT|CONTAINER_ID|SCREEN_WIDTH|SCREEN_HEIGHT|CUSTOM_REFRESH_RATES|SUNSHINE_MAC_ADDRESS|GS_ENABLE_CTRL_12|SUNSHINE_CSRF_ORIGINS|STEAM_LIBRARY_PATH|SUNSHINE_VK_RGB_DIRECT|GAMESCOPE_UNCOMPRESSED_OUTPUT)=" || true; } > /run/container.env; if ! grep -q "^SUNSHINE_MAC_ADDRESS=" /run/container.env; then id="${CONTAINER_ID:-default}"; mac="$(echo -n "$id" | md5sum | sed "s/^\\(..\\)\\(..\\)\\(..\\)\\(..\\)\\(..\\).*$/02:\\1:\\2:\\3:\\4:\\5/")"; echo "SUNSHINE_MAC_ADDRESS=$mac" >> /run/container.env; fi; chmod 644 /run/container.env; echo "[container-env] wrote /run/container.env"'
 RemainAfterExit=yes
 
 [Install]

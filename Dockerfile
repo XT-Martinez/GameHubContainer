@@ -68,6 +68,48 @@ RUN meson setup builddir \
     && DESTDIR=/build/install ninja -C builddir install
 
 # ============================================================
+# Stage 1b: Build FFmpeg (LizardByte build-deps) with our patches
+# ============================================================
+# Sunshine normally downloads build-deps' prebuilt static FFmpeg. We build it
+# from the pinned submodule instead so patches/ffmpeg/ can add encoder
+# features: 04-vulkan-encode-rgb-input lets the Vulkan encoder take RGB frames
+# and convert them on the video engine (VK_VALVE_video_encode_rgb_conversion).
+FROM base AS ffmpeg-builder
+
+RUN --mount=type=cache,dst=/var/cache/libdnf5 \
+    dnf5 -y install \
+    autoconf automake cmake diffutils findutils gcc gcc-c++ git make \
+    meson nasm ninja-build patch perl-interpreter pkgconf-pkg-config \
+    python3 libtool texinfo which xz bzip2 tar \
+    numactl-devel libva-devel libdrm-devel \
+    vulkan-headers vulkan-loader-devel \
+    libX11-devel libxcb-devel libXfixes-devel libXrandr-devel \
+    mesa-libGL-devel libxkbcommon-devel \
+    wayland-devel wayland-protocols-devel zlib-devel
+
+COPY Sunshine/third-party/build-deps/ /build/build-deps/
+# Applied after build-deps' own patches in the same directory (sorted by name).
+COPY patches/ffmpeg/ /build/build-deps/patches/FFmpeg/FFmpeg/vulkan/
+WORKDIR /build/build-deps
+
+# The submodules' .git files point outside the build context. Drop them and
+# make the tag fetch non-fatal: patches still apply with `git apply` outside a
+# repository, and x265 then reads its version from x265Version.txt.
+RUN find . -name .git -exec rm -rf {} + \
+    && sed -i 's/COMMAND_ERROR_IS_FATAL ANY/ERROR_QUIET/' cmake/git_fetch_tags.cmake \
+    && cmake -S . -B build -G "Unix Makefiles" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/build/prefix \
+        -DCMAKE_INSTALL_LIBDIR=lib \
+        -DBUILD_ALL=OFF \
+        -DBUILD_ALL_SUNSHINE=ON \
+        -DBUILD_FFMPEG_CUDA_LLVM=OFF \
+        -DPARALLEL_BUILDS=$(nproc) \
+    && cmake --build build --parallel $(nproc) \
+    && cmake --install build \
+    && grep -q -a "RGB input %s, coded as %s" /build/prefix/ffmpeg/lib/libavcodec.a
+
+# ============================================================
 # Stage 2: Build Sunshine
 # ============================================================
 FROM base AS sunshine-builder
@@ -91,6 +133,7 @@ RUN --mount=type=cache,dst=/var/cache/libdnf5 \
     wayland-devel wayland-protocols-devel
 
 COPY Sunshine/ /build/sunshine/
+COPY --from=ffmpeg-builder /build/prefix/ffmpeg/ /build/ffmpeg/
 WORKDIR /build/sunshine
 
 ENV CC=gcc CXX=g++
@@ -104,8 +147,10 @@ RUN sed -i 's/#error Check and update.*/#warning NVENC version mismatch - runtim
     sed -i 's/format_config\.inputPixelBitDepthMinus8 = 2;/\/\/ inputPixelBitDepthMinus8 removed in newer SDK/' \
         src/nvenc/nvenc_base.cpp
 
-# CMake fetches Boost, FFmpeg prebuilts, and other deps via FetchContent
+# CMake fetches Boost and other deps via FetchContent; FFmpeg comes from
+# the ffmpeg-builder stage.
 RUN cmake -B build -G "Unix Makefiles" \
+    -DFFMPEG_PREPARED_BINARIES=/build/ffmpeg \
     -DBUILD_DOCS=OFF \
     -DBUILD_TESTS=OFF \
     -DCMAKE_BUILD_TYPE=Release \

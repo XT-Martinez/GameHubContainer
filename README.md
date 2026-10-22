@@ -113,6 +113,21 @@ The headless backend always advertises HDR10 capability (BT.2020/PQ, 1000 nit pe
 
 To disable HDR, set `ENABLE_GAMESCOPE_HDR=0` in the podman run command (e.g., `-e ENABLE_GAMESCOPE_HDR=0`).
 
+### Encoder RGB input (lower host latency)
+
+By default Sunshine converts each captured RGB frame to YUV with a compute shader before encoding. That shader competes with the game for the GPU, so host processing latency rises when a game is GPU bound. With the direct path the video engine does the conversion itself (`VK_VALVE_video_encode_rgb_conversion`, RADV): Sunshine hands gamescope's scanout buffer straight to the encoder. On the test machine (AMD Phoenix APU) this took host processing latency under GPU load from about 4.5 ms average (8 ms max) to 2.2 ms (3.8 ms max).
+
+It is opt-in:
+
+```bash
+SUNSHINE_VK_RGB_DIRECT=1 GAMESCOPE_UNCOMPRESSED_OUTPUT=1 ./run.sh 2 57989
+```
+
+- `GAMESCOPE_UNCOMPRESSED_OUTPUT=1` makes gamescope allocate its output images without DCC compression; the encoder cannot read compressed images.
+- `SUNSHINE_VK_RGB_DIRECT=1` makes Sunshine's Vulkan encoder take those images as input. FFmpeg needs `patches/ffmpeg/04-vulkan-encode-rgb-input.patch` for this, which the image build applies.
+
+The direct path is used only for 10-bit streams (HDR, or 10-bit SDR when Moonlight's HDR option is on), because gamescope's headless output is always 10-bit RGB. It also needs the stream resolution to match the container's. Otherwise Sunshine logs the reason and uses the compute conversion.
+
 ### Sleep / DPMS
 
 Steam's idle sleep settings work inside the container. When sleep triggers, gamescope enters DPMS mode (black screen, no frames streamed). On real hardware the power button resumes the system; in a container, gamescope instead wakes automatically when:
@@ -267,9 +282,10 @@ podman build -t gamehub-container .
 
 This is a multi-stage build:
 1. **gamescope-builder**: Compiles custom gamescope with Meson (~5 min)
-2. **sunshine-builder**: Compiles custom Sunshine with CMake, fetches Boost/FFmpeg via FetchContent (~10 min)
-3. **shim-builder**: Compiles the uinput tagging shim and mknod daemon (~5 sec)
-4. **runtime**: Fedora 44 with Valve's Mesa/PipeWire from Bazzite COPRs, Steam, and the built binaries
+2. **ffmpeg-builder**: Builds Sunshine's static FFmpeg (LizardByte build-deps, pinned by the Sunshine submodule) with `patches/ffmpeg/` applied (~7 min)
+3. **sunshine-builder**: Compiles custom Sunshine with CMake against that FFmpeg, fetches Boost via FetchContent (~10 min)
+4. **shim-builder**: Compiles the uinput tagging shim and mknod daemon (~5 sec)
+5. **runtime**: Fedora 44 with Valve's Mesa/PipeWire from Bazzite COPRs, Steam, and the built binaries
 
 Subsequent builds are faster due to Docker layer caching.
 
