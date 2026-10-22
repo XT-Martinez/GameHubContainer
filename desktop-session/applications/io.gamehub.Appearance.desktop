@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Appearance
+Comment=Wallpaper and accent colour of the desktop
+Exec=/usr/local/bin/gamehub-appearance
+Icon=preferences-desktop-wallpaper
+Terminal=false
+Type=Application
+Categories=Settings;DesktopSettings;
+Keywords=wallpaper;background;accent;colour;color;theme;
+StartupWMClass=io.gamehub.Appearance

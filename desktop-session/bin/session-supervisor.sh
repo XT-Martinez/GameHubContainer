@@ -27,9 +27,9 @@ show_splash() {
     kill_splash
     WAYLAND_DISPLAY="${GAMESCOPE_WAYLAND_DISPLAY:-gamescope-0}" \
         foot --fullscreen --app-id=gamehub-splash \
-            -o 'colors.background=0d1118' \
-            -o 'colors.foreground=8893a8' \
-            -o 'font=monospace:size=16' \
+            -o 'colors.background=1c1b1a' \
+            -o 'colors.foreground=b3aca1' \
+            -o 'font=Inter:size=16' \
             -o 'pad=0x0' \
             sh -c "
                 printf '\033[?25l'

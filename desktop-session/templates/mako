@@ -1,0 +1,24 @@
+font=Inter 10.5
+background-color=#232120f2
+text-color=#ece6dd
+border-color=#4a443e
+progress-color=over {{accent}}55
+border-size=1
+border-radius=12
+padding=14
+margin=12
+outer-margin=8,8,0,0
+width=380
+default-timeout=5000
+icon-path=/usr/share/icons/Fluent-dark:/usr/share/icons/Fluent
+max-icon-size=48
+layer=overlay
+anchor=top-right
+
+[urgency=low]
+text-color=#b3aca1
+default-timeout=3000
+
+[urgency=critical]
+border-color=#d47766
+default-timeout=0

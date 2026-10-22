@@ -1,0 +1,139 @@
+/* GameHub dock, confirmation dialog and Appearance settings.
+   Accent filled in by gamehub-theme; the dock reloads this file on change. */
+
+/* Dock */
+
+window.gamehub-dock {
+  background: transparent;
+}
+
+.dock {
+  padding: 5px 8px;
+  background: rgba(35, 33, 32, 0.92);
+  border: 1px solid rgba(74, 68, 62, 0.8);
+  border-radius: 18px;
+}
+
+.dock button.app {
+  min-width: 0;
+  min-height: 0;
+  padding: 5px 7px 1px;
+  margin: 0 1px;
+  border: none;
+  border-radius: 12px;
+  background: none;
+  box-shadow: none;
+  transition: background-color 120ms ease-out;
+}
+
+.dock button.app:hover {
+  background-color: rgba(255, 255, 255, 0.07);
+}
+
+.dock .separator {
+  min-width: 1px;
+  margin: 12px 7px;
+  background: rgba(179, 172, 161, 0.25);
+}
+
+.dock-menu menuitem {
+  padding: 6px 12px;
+}
+
+/* Confirmation dialog */
+
+window.gamehub-confirm {
+  background: rgba(10, 9, 9, 0.5);
+}
+
+.confirm-card {
+  padding: 26px 28px 22px;
+  background: #232120;
+  border: 1px solid #3e3a36;
+  border-radius: 16px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+}
+
+.confirm-card .title {
+  font-family: Inter;
+  font-size: 17px;
+  font-weight: 700;
+  color: #ece6dd;
+}
+
+.confirm-card .body {
+  font-family: Inter;
+  font-size: 13px;
+  color: #b3aca1;
+}
+
+.confirm-card button {
+  min-height: 34px;
+  padding: 0 18px;
+  border-radius: 9px;
+  border: none;
+  box-shadow: none;
+  font-family: Inter;
+  font-weight: 600;
+  color: #ece6dd;
+  background: #34312e;
+}
+
+.confirm-card button:hover {
+  background: #3e3a36;
+}
+
+.confirm-card button.accept {
+  color: {{accent_fg}};
+  background: {{accent}};
+}
+
+.confirm-card button.accept:hover {
+  background: {{accent_hover}};
+}
+
+.confirm-card button:focus {
+  box-shadow: 0 0 0 2px rgba({{accent_rgb}}, 0.45);
+}
+
+/* Appearance settings */
+
+.appearance .heading {
+  font-weight: 700;
+  font-size: 15px;
+}
+
+.appearance .caption {
+  color: #857f76;
+  font-size: 12px;
+}
+
+.appearance button.wallpaper {
+  padding: 3px;
+  border-radius: 12px;
+  border: 2px solid transparent;
+  background: none;
+  box-shadow: none;
+}
+
+.appearance button.wallpaper:hover {
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+.appearance button.wallpaper.selected {
+  border-color: {{accent}};
+}
+
+.appearance button.swatch {
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+  border-radius: 99px;
+  border: 2px solid rgba(0, 0, 0, 0.25);
+  box-shadow: none;
+}
+
+.appearance button.swatch.selected {
+  border-color: #ece6dd;
+  box-shadow: 0 0 0 2px rgba(236, 230, 221, 0.25);
+}

@@ -17,9 +17,13 @@ else
 fi
 wlr-randr --output WL-1 --custom-mode "${W}x${H}" 2>/dev/null &
 
-swaybg -i /usr/share/gamehub-desktop/assets/wallpaper.svg -m fill &
+# Themed configs are rendered by gamehub-theme (see start-desktop-session.sh)
+THEMED="${XDG_CONFIG_HOME:-$HOME/.config}/gamehub-desktop"
 
-mako --config /usr/share/gamehub-desktop/mako/config &
+/usr/local/bin/gamehub-theme wallpaper
 
-waybar -c /usr/share/gamehub-desktop/waybar/config.jsonc \
-       -s /usr/share/gamehub-desktop/waybar/style.css &
+mako --config "$THEMED/mako/config" &
+
+waybar -c "$THEMED/waybar/config.jsonc" -s "$THEMED/waybar/style.css" &
+
+/usr/local/bin/gamehub-dock &

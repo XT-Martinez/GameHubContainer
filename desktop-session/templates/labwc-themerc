@@ -1,0 +1,76 @@
+# GameHub: warm graphite with one accent colour (filled in by gamehub-theme).
+#
+# Palette
+#   base     #1c1b1a   bars     #232120   surface  #2a2826
+#   raised   #34312e   border   #3e3a36
+#   text     #ece6dd   dim      #b3aca1   muted    #857f76
+#   accent   {{accent}} (gamehub-theme)
+
+border.width: 1
+
+window.titlebar.padding.width: 10
+window.titlebar.padding.height: 7
+window.button.width: 26
+window.button.height: 26
+window.button.spacing: 4
+window.button.hover.bg.color: #ffffff14
+window.button.hover.bg.corner-radius: 13
+
+window.active.border.color: #4a443e
+window.inactive.border.color: #2f2c29
+
+window.active.title.bg: Solid
+window.active.title.bg.color: #2a2826
+window.inactive.title.bg: Solid
+window.inactive.title.bg.color: #232120
+
+window.active.label.text.color: #ece6dd
+window.inactive.label.text.color: #857f76
+window.label.text.justify: center
+
+window.active.button.unpressed.image.color: #d8d1c6
+window.inactive.button.unpressed.image.color: #6f6a62
+window.active.button.close.hover.image.color: #e8907c
+
+window.active.shadow.size: 36
+window.active.shadow.color: #00000066
+window.inactive.shadow.size: 22
+window.inactive.shadow.color: #00000040
+
+window.active.indicator.toggled-keybind.color: {{accent}}
+
+menu.border.width: 1
+menu.border.color: #3e3a36
+menu.items.padding.x: 12
+menu.items.padding.y: 7
+menu.items.bg.color: #232120
+menu.items.text.color: #ece6dd
+menu.items.active.bg.color: {{accent_soft}}
+menu.items.active.text.color: {{accent_text}}
+menu.separator.width: 1
+menu.separator.padding.width: 8
+menu.separator.padding.height: 4
+menu.separator.color: #3e3a36
+menu.title.bg.color: #1c1b1a
+menu.title.text.color: #b3aca1
+menu.title.text.justify: left
+
+osd.bg.color: #232120
+osd.border.color: #3e3a36
+osd.border.width: 1
+osd.label.text.color: #ece6dd
+
+osd.window-switcher.style-thumbnail.padding: 10
+osd.window-switcher.style-thumbnail.item.width: 260
+osd.window-switcher.style-thumbnail.item.height: 200
+osd.window-switcher.style-thumbnail.item.active.border.width: 2
+osd.window-switcher.style-thumbnail.item.active.border.color: {{accent}}cc
+osd.window-switcher.style-thumbnail.item.active.bg.color: {{accent}}1f
+
+osd.workspace-switcher.boxes.width: 24
+osd.workspace-switcher.boxes.height: 14
+
+snapping.overlay.region.bg.color: {{accent}}26
+snapping.overlay.edge.bg.color: {{accent}}26
+snapping.overlay.region.border.color: {{accent}}88
+snapping.overlay.edge.border.color: {{accent}}88

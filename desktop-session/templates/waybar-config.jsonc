@@ -1,0 +1,45 @@
+// Top bar: launcher, clock, status, return to game mode.
+// The dock is gamehub-dock. gamehub-theme fills in the accent colour.
+{
+  "name": "topbar",
+  "layer": "top",
+  "position": "top",
+  "height": 34,
+  "spacing": 4,
+  "modules-left": ["custom/launcher"],
+  "modules-center": ["clock"],
+  "modules-right": ["tray", "pulseaudio", "custom/steam"],
+  "custom/launcher": {
+    "format": "  Applications",
+    "tooltip": false,
+    "on-click": "/usr/local/bin/desktop-launcher.sh"
+  },
+  "clock": {
+    "format": "{:%a %d %b   %H:%M}",
+    "tooltip-format": "<tt>{calendar}</tt>",
+    "calendar": {
+      "mode": "month",
+      "format": {
+        "today": "<span color='{{accent}}'><b>{}</b></span>"
+      }
+    }
+  },
+  "tray": {
+    "icon-size": 16,
+    "spacing": 10
+  },
+  "pulseaudio": {
+    "format": "{icon}  {volume}%",
+    "format-muted": "  muted",
+    "format-icons": { "default": ["", "", ""] },
+    "scroll-step": 5,
+    "on-click": "/usr/bin/pavucontrol",
+    "on-click-right": "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle",
+    "tooltip": false
+  },
+  "custom/steam": {
+    "format": "  Game Mode",
+    "tooltip-format": "Close the desktop and return to Steam",
+    "on-click": "/usr/local/bin/return-to-steam.sh"
+  }
+}

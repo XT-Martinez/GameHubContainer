@@ -1,12 +1,11 @@
 <?xml version="1.0"?>
 <labwc_config>
   <core>
-    <gap>10</gap>
+    <gap>8</gap>
   </core>
 
   <placement>
-    <policy>cascade</policy>
-    <cascadeOffset x="28" y="28" />
+    <policy>center</policy>
   </placement>
 
   <windowSwitcher preview="yes" outlines="yes">
@@ -14,19 +13,14 @@
   </windowSwitcher>
 
   <desktops>
-    <number>4</number>
-    <names>
-      <name>Main</name>
-      <name>Files</name>
-      <name>Web</name>
-      <name>Misc</name>
-    </names>
-    <popupTime>750</popupTime>
+    <number>1</number>
   </desktops>
 
   <theme>
     <name>GameHub</name>
-    <cornerRadius>12</cornerRadius>
+    <icon>GameHub</icon>
+    <cornerRadius>10</cornerRadius>
+    <keepBorder>yes</keepBorder>
     <dropShadows>yes</dropShadows>
     <dropShadowsOnTiled>no</dropShadowsOnTiled>
     <maximizedDecoration>titlebar</maximizedDecoration>
@@ -34,20 +28,44 @@
       <layout>icon:iconify,max,close</layout>
     </titlebar>
     <font place="ActiveWindow">
-      <name>Sans</name>
-      <size>11</size>
-      <weight>Medium</weight>
+      <name>Inter</name>
+      <size>10</size>
+      <weight>Bold</weight>
     </font>
     <font place="InactiveWindow">
-      <name>Sans</name>
-      <size>11</size>
+      <name>Inter</name>
+      <size>10</size>
+      <weight>Bold</weight>
+    </font>
+    <font place="MenuHeader">
+      <name>Inter</name>
+      <size>10</size>
+      <weight>Bold</weight>
+    </font>
+    <font place="MenuItem">
+      <name>Inter</name>
+      <size>10</size>
     </font>
     <font place="OnScreenDisplay">
-      <name>Sans</name>
-      <size>11</size>
-      <weight>Medium</weight>
+      <name>Inter</name>
+      <size>10</size>
     </font>
   </theme>
+
+  <!-- Window edges grab 12 px for resizing even though the border is 1 px -->
+  <resize>
+    <drawContents>yes</drawContents>
+    <minimumArea>12</minimumArea>
+  </resize>
+
+  <snapping>
+    <range inner="10" outer="10" />
+    <topMaximize>yes</topMaximize>
+  </snapping>
+
+  <menu>
+    <showIcons>yes</showIcons>
+  </menu>
 
   <keyboard>
     <default />
@@ -64,7 +82,7 @@
       <action name="ShowMenu" menu="root-menu" />
     </keybind>
 
-    <!-- Terminal with GameHub theme -->
+    <!-- Terminal -->
     <keybind key="W-Return">
       <action name="Execute" command="/usr/bin/foot --config=/usr/share/gamehub-desktop/foot/foot.ini" />
     </keybind>
@@ -82,6 +100,17 @@
     <!-- Desktop Steam client -->
     <keybind key="W-s">
       <action name="Execute" command="/usr/local/bin/desktop-steam.sh" />
+    </keybind>
+
+    <!-- Maximize / tile -->
+    <keybind key="W-Up">
+      <action name="ToggleMaximize" />
+    </keybind>
+    <keybind key="W-Left">
+      <action name="SnapToEdge" direction="left" />
+    </keybind>
+    <keybind key="W-Right">
+      <action name="SnapToEdge" direction="right" />
     </keybind>
 
     <!-- Screenshot: area select to clipboard -->
@@ -102,29 +131,35 @@
 
   <mouse>
     <default />
+
+    <!-- Desktop: right click opens the menu; left click does nothing -->
     <context name="Root">
+      <mousebind button="Left" action="Press">
+        <action name="None" />
+      </mousebind>
       <mousebind button="Right" action="Press">
         <action name="ShowMenu" menu="root-menu" />
       </mousebind>
     </context>
-  </mouse>
 
-  <menu id="root-menu" label="GameHub">
-    <item label="Applications">
-      <action name="Execute" command="/usr/local/bin/desktop-launcher.sh" />
-    </item>
-    <item label="Terminal">
-      <action name="Execute" command="/usr/bin/foot --config=/usr/share/gamehub-desktop/foot/foot.ini" />
-    </item>
-    <item label="File Manager">
-      <action name="Execute" command="/usr/bin/thunar" />
-    </item>
-    <item label="Browser">
-      <action name="Execute" command="/usr/bin/firefox" />
-    </item>
-    <separator />
-    <item label="Return to Steam">
-      <action name="Execute" command="/usr/local/bin/return-to-steam.sh" />
-    </item>
-  </menu>
+    <!-- Alt+drag moves (left) or resizes (right) a window from anywhere in it.
+         Super+drag does the same by default, but Moonlight clients often keep
+         the Super key for themselves. -->
+    <context name="Frame">
+      <mousebind button="A-Left" action="Press">
+        <action name="Focus" />
+        <action name="Raise" />
+      </mousebind>
+      <mousebind button="A-Left" action="Drag">
+        <action name="Move" />
+      </mousebind>
+      <mousebind button="A-Right" action="Press">
+        <action name="Focus" />
+        <action name="Raise" />
+      </mousebind>
+      <mousebind button="A-Right" action="Drag">
+        <action name="Resize" />
+      </mousebind>
+    </context>
+  </mouse>
 </labwc_config>

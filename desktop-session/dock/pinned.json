@@ -1,0 +1,11 @@
+[
+  {"desktop": "gamehub-steam-desktop.desktop", "match": ["steam"]},
+  {"desktop": "com.heroicgameslauncher.hgl.desktop"},
+  {"desktop": "thunar.desktop"},
+  {"desktop": "org.mozilla.firefox.desktop"},
+  {
+    "desktop": "foot.desktop",
+    "name": "Terminal",
+    "command": "/usr/bin/foot --config=/usr/share/gamehub-desktop/foot/foot.ini"
+  }
+]

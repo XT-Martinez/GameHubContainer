@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" preserveAspectRatio="xMidYMid slice">
+  <!-- Dusk over layered hills: warm graphite with a low amber glow. -->
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1c1b1d"/>
+      <stop offset="45%" stop-color="#2b2628"/>
+      <stop offset="72%" stop-color="#4a3a35"/>
+      <stop offset="100%" stop-color="#6b4f40"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.62" cy="0.7" r="0.5">
+      <stop offset="0%" stop-color="#e2a874" stop-opacity="0.55"/>
+      <stop offset="35%" stop-color="#c58a5e" stop-opacity="0.22"/>
+      <stop offset="100%" stop-color="#c58a5e" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="sun" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0%" stop-color="#f3d2a6" stop-opacity="0.95"/>
+      <stop offset="60%" stop-color="#e6b17e" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#e6b17e" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="mist" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#d9b08a" stop-opacity="0"/>
+      <stop offset="50%" stop-color="#d9b08a" stop-opacity="0.12"/>
+      <stop offset="100%" stop-color="#d9b08a" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="hill1" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#5a443b"/>
+      <stop offset="100%" stop-color="#47372f"/>
+    </linearGradient>
+    <linearGradient id="hill2" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#3f322c"/>
+      <stop offset="100%" stop-color="#332924"/>
+    </linearGradient>
+    <linearGradient id="hill3" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#2c2420"/>
+      <stop offset="100%" stop-color="#241e1b"/>
+    </linearGradient>
+    <linearGradient id="hill4" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1f1a18"/>
+      <stop offset="100%" stop-color="#171413"/>
+    </linearGradient>
+    <filter id="soft" x="-20%" y="-200%" width="140%" height="500%">
+      <feGaussianBlur stdDeviation="18"/>
+    </filter>
+  </defs>
+
+  <rect width="1920" height="1080" fill="url(#sky)"/>
+  <rect width="1920" height="1080" fill="url(#glow)"/>
+  <circle cx="1190" cy="700" r="120" fill="url(#sun)"/>
+
+  <!-- Faint high clouds -->
+  <g fill="#e8c9a8" opacity="0.07" filter="url(#soft)">
+    <ellipse cx="520" cy="260" rx="420" ry="26"/>
+    <ellipse cx="1400" cy="330" rx="520" ry="22"/>
+    <ellipse cx="900" cy="410" rx="360" ry="16"/>
+  </g>
+
+  <path fill="url(#hill1)" d="M0 720 C 220 660, 380 640, 560 676 S 900 742, 1120 700 S 1500 610, 1700 640 S 1880 690, 1920 682 L 1920 1080 L 0 1080 Z"/>
+  <rect y="680" width="1920" height="110" fill="url(#mist)" filter="url(#soft)"/>
+  <path fill="url(#hill2)" d="M0 800 C 180 760, 360 736, 540 768 S 860 836, 1060 806 S 1400 732, 1620 760 S 1860 812, 1920 800 L 1920 1080 L 0 1080 Z"/>
+  <path fill="url(#hill3)" d="M0 880 C 240 842, 420 836, 620 864 S 980 920, 1220 888 S 1600 830, 1920 872 L 1920 1080 L 0 1080 Z"/>
+  <path fill="url(#hill4)" d="M0 968 C 260 930, 520 924, 760 950 S 1240 1000, 1500 972 S 1820 936, 1920 950 L 1920 1080 L 0 1080 Z"/>
+</svg>

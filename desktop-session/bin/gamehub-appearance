@@ -1,0 +1,7 @@
+#!/usr/bin/python3
+import sys
+
+sys.path.insert(0, "/usr/share/gamehub-desktop/python")
+from gamehub.appearance import main  # noqa: E402
+
+sys.exit(main())

@@ -291,8 +291,10 @@ RUN --mount=type=cache,dst=/var/cache/libdnf5 \
         steam
 
 # ── Remaining runtime dependencies ───────────────────────────
+# terra-glfw has no i686 build that installs next to its x86_64 one, which
+# blocks mangohud.i686; Fedora's glfw is multilib.
 RUN --mount=type=cache,dst=/var/cache/libdnf5 \
-    dnf5 -y install \
+    dnf5 -y --exclude=terra-glfw install \
         # Display / Wayland
         libwayland-client \
         xorg-x11-server-Xwayland \
@@ -300,7 +302,8 @@ RUN --mount=type=cache,dst=/var/cache/libdnf5 \
         xrandr \
         labwc waybar wofi swaybg mako foot fuzzel \
         thunar gvfs xfconf tumbler firefox \
-        adwaita-icon-theme papirus-icon-theme \
+        adwaita-icon-theme adw-gtk3-theme \
+        rsms-inter-fonts jetbrains-mono-fonts pavucontrol \
         grim slurp wl-clipboard xdg-utils \
         # Input
         libevdev libinput hidapi \
@@ -312,7 +315,8 @@ RUN --mount=type=cache,dst=/var/cache/libdnf5 \
         libcurl miniupnpc \
         libayatana-appindicator3 libnotify \
         # Gaming / overlay
-        mangohud vkBasalt \
+        # i686 so 32-bit games (e.g. D3D7 titles on D7VK) get the overlay too
+        mangohud mangohud.i686 vkBasalt \
         # Display control
         wlr-randr \
         # Networking (SteamOS OOBE requires NetworkManager D-Bus API)
@@ -322,13 +326,26 @@ RUN --mount=type=cache,dst=/var/cache/libdnf5 \
         which evtest procps-ng util-linux \
         # switcherooctl needs PyGObject
         python3-gobject \
+        # gamehub-dock: layer-shell window plus window list over Wayland
+        # (wlr-foreign-toplevel); the -devel packages carry protocol XML
+        gtk-layer-shell python3-pywayland wayland-devel wlr-protocols-devel \
         # Steam runtime needs locale and hw detection
         glibc-langpack-en pciutils \
         # SDL controller database
         && \
-    # Heroic Games Launcher (Epic/GOG/Amazon)
-    dnf5 -y copr enable atim/heroic-games-launcher && \
-    dnf5 -y install heroic-games-launcher-bin && \
+    # Heroic Games Launcher (Epic/GOG/Amazon) and ProtonPlus (Proton/Wine
+    # runner manager); Terra tracks upstream releases closely. Fluent is the
+    # desktop icon theme.
+    dnf5 --enable-repo=terra -y install heroic-games-launcher protonplus fluent-icon-theme && \
+    # gamehub-theme recolours Fluent's folders to the accent itself, so the
+    # 27 MB per-colour variants are dead weight
+    rm -rf /usr/share/icons/Fluent-green* /usr/share/icons/Fluent-grey* \
+        /usr/share/icons/Fluent-orange* /usr/share/icons/Fluent-pink* \
+        /usr/share/icons/Fluent-purple* /usr/share/icons/Fluent-red* \
+        /usr/share/icons/Fluent-teal* /usr/share/icons/Fluent-yellow* && \
+    # Steam shortcuts made by the earlier COPR build point at its binary path
+    mkdir -p /usr/lib64/heroic-games-launcher-bin && \
+    ln -s /usr/lib64/heroic/heroic /usr/lib64/heroic-games-launcher-bin/heroic && \
     mkdir -p /usr/share/sdl/ && \
     curl --retry 3 -Lo /usr/share/sdl/gamecontrollerdb.txt \
         https://raw.githubusercontent.com/mdqinc/SDL_GameControllerDB/refs/heads/master/gamecontrollerdb.txt && \
@@ -385,16 +402,20 @@ COPY services/gaming-session.service services/sunshine.service \
 COPY scripts/ /usr/local/bin/
 COPY desktop-session/bin/ /usr/local/bin/
 COPY desktop-session/labwc/ /usr/share/gamehub-desktop/labwc/
-COPY desktop-session/waybar/ /usr/share/gamehub-desktop/waybar/
 COPY desktop-session/wofi/ /usr/share/gamehub-desktop/wofi/
-COPY desktop-session/mako/ /usr/share/gamehub-desktop/mako/
 COPY desktop-session/foot/ /usr/share/gamehub-desktop/foot/
-COPY desktop-session/fuzzel/ /usr/share/gamehub-desktop/fuzzel/
-COPY desktop-session/assets/ /usr/share/gamehub-desktop/assets/
-COPY desktop-session/themes/GameHub/ /usr/share/themes/GameHub/
+# Themed configs are templates; gamehub-theme renders them per user
+COPY desktop-session/templates/ /usr/share/gamehub-desktop/templates/
+COPY desktop-session/wallpapers/ /usr/share/gamehub-desktop/wallpapers/
+COPY desktop-session/dock/ /usr/share/gamehub-desktop/dock/
+COPY desktop-session/python/ /usr/share/gamehub-desktop/python/
 COPY desktop-session/applications/ /usr/share/applications/
 COPY desktop-session/gamescope-session-plus/steam /usr/share/gamehub-desktop/steam.session
-RUN mkdir -p /usr/share/applications/steam && \
+RUN python3 -m pywayland.scanner -o /usr/share/gamehub-desktop/python/gamehub_protocols \
+        -i /usr/share/wayland/wayland.xml \
+           /usr/share/wlr-protocols/unstable/wlr-foreign-toplevel-management-unstable-v1.xml && \
+    python3 -m compileall -q /usr/share/gamehub-desktop/python && \
+    mkdir -p /usr/share/applications/steam && \
     mkdir -p /etc/gamescope-session-plus/sessions.d && \
     cp /usr/share/applications/gamehub-switch-to-desktop.desktop \
        /usr/share/applications/steam/gamehub-switch-to-desktop.desktop && \
@@ -402,7 +423,7 @@ RUN mkdir -p /usr/share/applications/steam && \
        /etc/gamescope-session-plus/sessions.d/steam && \
     ln -sf /usr/local/bin/steamos-session-select /usr/bin/steamos-session-select && \
     ln -sf /usr/local/bin/return-to-gamemode /usr/bin/return-to-gamemode && \
-    chmod +x /usr/local/bin/*.sh /usr/local/bin/steam /usr/local/bin/register-steam-library /usr/local/bin/ryzenadj /usr/local/bin/gamehub-ryzenadj-client /usr/local/bin/install-decky /usr/local/bin/session-supervisor.sh /usr/local/bin/start-desktop-session.sh /usr/local/bin/desktop-launcher.sh /usr/local/bin/desktop-steam.sh /usr/local/bin/switch-to-desktop.sh /usr/local/bin/return-to-steam.sh /usr/local/bin/steamos-session-select /usr/local/bin/return-to-gamemode /usr/share/gamehub-desktop/labwc/autostart
+    chmod +x /usr/local/bin/*.sh /usr/local/bin/steam /usr/local/bin/register-steam-library /usr/local/bin/ryzenadj /usr/local/bin/gamehub-ryzenadj-client /usr/local/bin/install-decky /usr/local/bin/session-supervisor.sh /usr/local/bin/start-desktop-session.sh /usr/local/bin/desktop-launcher.sh /usr/local/bin/desktop-steam.sh /usr/local/bin/switch-to-desktop.sh /usr/local/bin/return-to-steam.sh /usr/local/bin/steamos-session-select /usr/local/bin/return-to-gamemode /usr/local/bin/gamehub-theme /usr/local/bin/gamehub-dock /usr/local/bin/gamehub-confirm /usr/local/bin/gamehub-appearance /usr/share/gamehub-desktop/labwc/autostart
 
 # Install system services (need real root for mknod/chmod in rootless podman)
 COPY services/device-permissions.service /etc/systemd/system/device-permissions.service

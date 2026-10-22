@@ -36,8 +36,9 @@ isolation, submodules rebased onto upstream).
 - **`/dev/uhid`** is now loaded at boot and `0666` (section 1 below kept for
   reference on other hosts).
 
-- **Encoder RGB input** (2026-10-22). Opt-in `SUNSHINE_VK_RGB_DIRECT=1` +
-  `GAMESCOPE_UNCOMPRESSED_OUTPUT=1`: the Vulkan encoder converts gamescope's
+- **Encoder RGB input** (2026-10-22). On by default (opt out with
+  `SUNSHINE_VK_RGB_DIRECT=0` + `GAMESCOPE_UNCOMPRESSED_OUTPUT=0`): the Vulkan
+  encoder converts gamescope's
   RGB output on the video engine instead of Sunshine's compute shader. HDR
   streaming verified (AV1, colours correct); host processing latency under
   GPU load went from 4.5 ms avg / 8 ms max to 2.2 ms / 3.8 ms. See README.
@@ -65,8 +66,9 @@ sudo modprobe uhid && echo uhid | sudo tee /etc/modules-load.d/uhid.conf && sudo
 - Default ports 47984-48010 are taken by the host (linuxbrew) Sunshine, so
   instance 1 cannot start while it runs. Testing used `./run.sh 2 57989`.
 
-- Encoder RGB input: verify the cursor-repaint fix in a low-FPS Steam page,
-  and try HEVC HDR and 10-bit SDR.
+- Encoder RGB input: try HEVC HDR and 10-bit SDR. (Cursor-repaint fix
+  verified smooth on a second client; the remaining stutter was the first
+  client's network.)
 
 ## 3. Known limitations (accepted for now)
 

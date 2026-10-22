@@ -1,0 +1,75 @@
+/* GameHub top bar: warm graphite with the accent from gamehub-theme. */
+
+* {
+  border: none;
+  border-radius: 0;
+  font-family: "Inter", "Font Awesome 6 Free", "Font Awesome 6 Brands", sans-serif;
+  font-size: 13px;
+  min-height: 0;
+}
+
+tooltip {
+  background: #232120;
+  border: 1px solid #3e3a36;
+  border-radius: 8px;
+}
+
+tooltip label {
+  color: #ece6dd;
+}
+
+/* Top bar */
+
+window#waybar {
+  background: rgba(28, 27, 26, 0.94);
+  border-bottom: 1px solid rgba(62, 58, 54, 0.9);
+  color: #ece6dd;
+}
+
+window#waybar #custom-launcher,
+window#waybar #clock,
+window#waybar #tray,
+window#waybar #pulseaudio,
+window#waybar #custom-steam {
+  padding: 0 12px;
+  margin: 4px 2px;
+  border-radius: 8px;
+}
+
+window#waybar #custom-launcher {
+  margin-left: 6px;
+  font-weight: 600;
+}
+
+window#waybar #clock {
+  font-weight: 600;
+}
+
+window#waybar #pulseaudio {
+  color: #b3aca1;
+}
+
+window#waybar #custom-steam {
+  margin-right: 6px;
+  color: {{accent_fg}};
+  background: {{accent}};
+  font-weight: 600;
+}
+
+window#waybar #custom-launcher:hover,
+window#waybar #clock:hover,
+window#waybar #pulseaudio:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+window#waybar #custom-steam:hover {
+  background: {{accent_hover}};
+}
+
+#tray > .passive {
+  -gtk-icon-effect: dim;
+}
+
+#tray > .needs-attention {
+  -gtk-icon-effect: highlight;
+}

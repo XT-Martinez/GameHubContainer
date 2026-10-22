@@ -7,4 +7,4 @@ if pkill -x fuzzel 2>/dev/null; then
 fi
 
 exec /usr/bin/fuzzel \
-    --config=/usr/share/gamehub-desktop/fuzzel/fuzzel.ini
+    --config="${XDG_CONFIG_HOME:-$HOME/.config}/gamehub-desktop/fuzzel/fuzzel.ini"

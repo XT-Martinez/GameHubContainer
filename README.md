@@ -117,14 +117,12 @@ To disable HDR, set `ENABLE_GAMESCOPE_HDR=0` in the podman run command (e.g., `-
 
 By default Sunshine converts each captured RGB frame to YUV with a compute shader before encoding. That shader competes with the game for the GPU, so host processing latency rises when a game is GPU bound. With the direct path the video engine does the conversion itself (`VK_VALVE_video_encode_rgb_conversion`, RADV): Sunshine hands gamescope's scanout buffer straight to the encoder. On the test machine (AMD Phoenix APU) this took host processing latency under GPU load from about 4.5 ms average (8 ms max) to 2.2 ms (3.8 ms max).
 
-It is opt-in:
+It is on by default. Two switches turn it off; set either one to `0`, e.g. `SUNSHINE_VK_RGB_DIRECT=0 ./run.sh 2 57989`:
 
-```bash
-SUNSHINE_VK_RGB_DIRECT=1 GAMESCOPE_UNCOMPRESSED_OUTPUT=1 ./run.sh 2 57989
-```
+- `GAMESCOPE_UNCOMPRESSED_OUTPUT` controls whether gamescope allocates its output images without DCC compression. The encoder cannot read compressed images.
+- `SUNSHINE_VK_RGB_DIRECT` controls whether Sunshine's Vulkan encoder takes those images as input. FFmpeg needs `patches/ffmpeg/04-vulkan-encode-rgb-input.patch` for this, which the image build applies.
 
-- `GAMESCOPE_UNCOMPRESSED_OUTPUT=1` makes gamescope allocate its output images without DCC compression; the encoder cannot read compressed images.
-- `SUNSHINE_VK_RGB_DIRECT=1` makes Sunshine's Vulkan encoder take those images as input. FFmpeg needs `patches/ffmpeg/04-vulkan-encode-rgb-input.patch` for this, which the image build applies.
+Turn off both or neither: with only `GAMESCOPE_UNCOMPRESSED_OUTPUT=0`, Sunshine still tries the direct path and cannot import the compressed frames.
 
 The direct path is used only for 10-bit streams (HDR, or 10-bit SDR when Moonlight's HDR option is on), because gamescope's headless output is always 10-bit RGB. It also needs the stream resolution to match the container's. Otherwise Sunshine logs the reason and uses the compute conversion.
 

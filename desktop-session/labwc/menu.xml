@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<openbox_menu>
+  <menu id="root-menu" label="GameHub">
+    <item label="Applications" icon="view-app-grid">
+      <action name="Execute" command="/usr/local/bin/desktop-launcher.sh" />
+    </item>
+    <separator />
+    <item label="Steam" icon="steam">
+      <action name="Execute" command="/usr/local/bin/desktop-steam.sh" />
+    </item>
+    <item label="Heroic Games Launcher" icon="com.heroicgameslauncher.hgl">
+      <action name="Execute" command="/usr/bin/heroic" />
+    </item>
+    <item label="Files" icon="org.xfce.thunar">
+      <action name="Execute" command="/usr/bin/thunar" />
+    </item>
+    <item label="Firefox" icon="firefox">
+      <action name="Execute" command="/usr/bin/firefox" />
+    </item>
+    <item label="Terminal" icon="utilities-terminal">
+      <action name="Execute" command="/usr/bin/foot --config=/usr/share/gamehub-desktop/foot/foot.ini" />
+    </item>
+    <separator />
+    <item label="Appearance" icon="preferences-desktop-wallpaper">
+      <action name="Execute" command="/usr/local/bin/gamehub-appearance" />
+    </item>
+    <item label="Sound Settings" icon="multimedia-volume-control">
+      <action name="Execute" command="/usr/bin/pavucontrol" />
+    </item>
+    <item label="Reload Desktop" icon="view-refresh">
+      <action name="Reconfigure" />
+    </item>
+    <separator />
+    <item label="Return to Steam" icon="go-previous">
+      <action name="Execute" command="/usr/local/bin/return-to-steam.sh" />
+    </item>
+  </menu>
+</openbox_menu>
