@@ -12,6 +12,9 @@
 #   SCREEN_WIDTH  (default: 1920)
 #   SCREEN_HEIGHT (default: 1080)
 #   CUSTOM_REFRESH_RATES (default: 60,90,120 — gamescope --custom-refresh-rates)
+#   ADAPTIVE_SYNC (default: 1 — gamescope --adaptive-sync; set it empty to
+#     turn it off). The headless output then paints each game frame as it
+#     lands instead of on the next timer tick.
 
 set -euo pipefail
 
@@ -36,6 +39,7 @@ export BACKEND=headless
 export SCREEN_WIDTH="${SCREEN_WIDTH:-1920}"
 export SCREEN_HEIGHT="${SCREEN_HEIGHT:-1080}"
 export CUSTOM_REFRESH_RATES="${CUSTOM_REFRESH_RATES:-60,90,120}"
+export ADAPTIVE_SYNC="${ADAPTIVE_SYNC-1}"
 export CONTAINER_ID="${CONTAINER_ID:-default}"
 export ENABLE_GAMESCOPE_HDR="${ENABLE_GAMESCOPE_HDR:-1}"
 export ENABLE_GAMESCOPE_WSI="${ENABLE_GAMESCOPE_WSI:-1}"
@@ -57,6 +61,7 @@ export SUNSHINE_MAC_ADDRESS
 mkdir -p "${HOME}/.config/environment.d"
 cat > "${HOME}/.config/environment.d/container.conf" <<ENVEOF
 CUSTOM_REFRESH_RATES=${CUSTOM_REFRESH_RATES}
+ADAPTIVE_SYNC=${ADAPTIVE_SYNC}
 ENABLE_GAMESCOPE_HDR=${ENABLE_GAMESCOPE_HDR}
 ENABLE_GAMESCOPE_WSI=${ENABLE_GAMESCOPE_WSI}
 BACKEND=${BACKEND}
@@ -75,6 +80,7 @@ systemctl --user set-environment \
     SCREEN_WIDTH="$SCREEN_WIDTH" \
     SCREEN_HEIGHT="$SCREEN_HEIGHT" \
     CUSTOM_REFRESH_RATES="$CUSTOM_REFRESH_RATES" \
+    ADAPTIVE_SYNC="$ADAPTIVE_SYNC" \
     CONTAINER_ID="$CONTAINER_ID" \
     ENABLE_GAMESCOPE_HDR="$ENABLE_GAMESCOPE_HDR" \
     ENABLE_GAMESCOPE_WSI="$ENABLE_GAMESCOPE_WSI" \

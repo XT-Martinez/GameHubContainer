@@ -34,6 +34,16 @@
  *     placeholder before unlinking it.  A bind mount pins the inode, so a
  *     later host-side rename does not affect a node that is already bound.
  *
+ *   Bind mode stages each node: the placeholder and bind live in
+ *   STAGE_DIR, and the public name (/dev/input/event5, /dev/hidraw0) is a
+ *   symlink to it.  Steam runs games in a pressure-vessel sandbox, a mount
+ *   namespace copied when the game starts, and Proton's Wine finds devices
+ *   there by inotify on /dev/input and /dev, reading the node's rdev as
+ *   soon as the name appears.  STAGE_DIR is a shared mount, so a bind made
+ *   after the game started reaches the sandbox, and the symlink appears only
+ *   once its target is the device, so Wine never sees an empty placeholder.
+ *   Without both, a controller reconnected mid-game is lost to the game.
+ *
  *   Mknod mode (rootful, or HOST_DEV_DIR absent): plain mknod(2) of the
  *     char device.  If a bind in bind mode fails, the daemon falls back to
  *     mknod for that node.
@@ -87,6 +97,8 @@
 /* Bind mode: host /dev bind point and default owner (see header comment) */
 #define HOST_DEV_DEFAULT  "/run/gamehub-host/dev"
 #define HOST_HIDDEN_DIR   "gamehub-input"   /* under HOST_DEV_DIR: host-moved nodes */
+/* Bind mode: where nodes are bound before their public name links to them */
+#define STAGE_DIR         DEV_INPUT "/.gamehub-nodes"
 #define GAMER_UID_DEFAULT 1000
 
 /* How long to wait for sysfs to populate */
@@ -126,6 +138,7 @@ static int debug_enabled;
 static int bind_mode;                       /* 1 = bind placeholders, 0 = mknod */
 static char host_dev_dir[PATH_MAX] = HOST_DEV_DEFAULT;
 static unsigned int gamer_uid = GAMER_UID_DEFAULT;
+static int stage_ready;                     /* STAGE_DIR is a shared mount */
 
 /* ── Udev netlink header ──────────────────────────────────── */
 
@@ -1010,13 +1023,72 @@ static int hid_sibling_pending(const char *devname) {
     return 0;
 }
 
+/* Is path the mount point of an entry in /proc/self/mountinfo? */
+static int is_mount_point(const char *path) {
+    FILE *f = fopen("/proc/self/mountinfo", "re");
+    if (!f)
+        return 0;
+    char line[4096], mnt[PATH_MAX];
+    int found = 0;
+    while (!found && fgets(line, sizeof(line), f)) {
+        /* Fields: id parent major:minor root mount-point ... */
+        if (sscanf(line, "%*s %*s %*s %*s %4095s", mnt) == 1 &&
+            strcmp(mnt, path) == 0)
+            found = 1;
+    }
+    fclose(f);
+    return found;
+}
+
+/*
+ * Bind mode: make STAGE_DIR a shared tmpfs (see the header comment).  It must
+ * be shared before Steam starts a game, so this runs before the first scan.
+ * On failure nodes are bound at their public names as before.
+ */
+static void setup_stage_dir(void) {
+    mkdir(DEV_INPUT, 0755);
+    if (mkdir(STAGE_DIR, 0755) != 0 && errno != EEXIST) {
+        INFO("WARNING: cannot create %s: %s", STAGE_DIR, strerror(errno));
+        return;
+    }
+    if (!is_mount_point(STAGE_DIR) &&
+        mount("tmpfs", STAGE_DIR, "tmpfs", MS_NOSUID | MS_NODEV,
+              "mode=0755,size=64k") != 0) {
+        INFO("WARNING: cannot mount %s: %s", STAGE_DIR, strerror(errno));
+        return;
+    }
+    if (mount(NULL, STAGE_DIR, NULL, MS_SHARED, NULL) != 0) {
+        INFO("WARNING: cannot make %s shared: %s", STAGE_DIR, strerror(errno));
+        return;
+    }
+    stage_ready = 1;
+    INFO("staging nodes in %s (shared)", STAGE_DIR);
+}
+
+/* Bind a placeholder at path to hostpath.  Returns 0 on success. */
+static int bind_placeholder(const char *hostpath, const char *path) {
+    int fd = open(path, O_CREAT | O_WRONLY | O_CLOEXEC, 0644);
+    if (fd < 0) {
+        INFO("cannot create placeholder %s: %s", path, strerror(errno));
+        return -1;
+    }
+    close(fd);
+    if (mount(hostpath, path, NULL, MS_BIND, NULL) != 0) {
+        INFO("bind %s -> %s failed: %s", hostpath, path, strerror(errno));
+        unlink(path);
+        return -1;
+    }
+    return 0;
+}
+
 /*
  * Place a node at nodepath for host device devname (maj:min).  Bind mode:
- * create an empty placeholder and bind-mount the host node over it, where the
- * host node is chosen by host_node_path (hidden dir first, then the original
- * location) and must be a char device with the expected rdev.  On bind failure
- * the placeholder is removed and mknod is tried.  Returns 0 on success, -1 on
- * failure.
+ * bind the host node over an empty placeholder, where the host node is chosen
+ * by host_node_path (hidden dir first, then the original location) and must
+ * be a char device with the expected rdev.  With STAGE_DIR ready the
+ * placeholder is STAGE_DIR/devname and nodepath becomes a symlink to it;
+ * otherwise the placeholder is nodepath itself.  If binding fails, mknod is
+ * tried.  Returns 0 on success, -1 on failure.
  */
 static int place_node(const char *nodepath, const char *devname, int hidraw,
                       unsigned int maj, unsigned int min) {
@@ -1025,21 +1097,26 @@ static int place_node(const char *nodepath, const char *devname, int hidraw,
         if (host_node_path(devname, hidraw, maj, min, hostpath, sizeof(hostpath)) != 1) {
             DBG("host node for %s missing or not char %u:%u, using mknod",
                 devname, maj, min);
-        } else {
-            int fd = open(nodepath, O_CREAT | O_WRONLY | O_CLOEXEC, 0644);
-            if (fd < 0) {
-                INFO("cannot create placeholder %s: %s, falling back to mknod",
-                     nodepath, strerror(errno));
-            } else {
-                close(fd);
-                if (mount(hostpath, nodepath, NULL, MS_BIND, NULL) == 0) {
-                    DBG("bound %s -> %s (%u:%u)", hostpath, nodepath, maj, min);
+        } else if (stage_ready) {
+            char stagepath[PATH_MAX];
+            snprintf(stagepath, sizeof(stagepath), STAGE_DIR "/%s", devname);
+            if (bind_placeholder(hostpath, stagepath) == 0) {
+                if (symlink(stagepath, nodepath) == 0) {
+                    DBG("bound %s -> %s, linked %s (%u:%u)",
+                        hostpath, stagepath, nodepath, maj, min);
                     return 0;
                 }
-                INFO("bind %s -> %s failed: %s, falling back to mknod",
-                     hostpath, nodepath, strerror(errno));
-                unlink(nodepath);
+                INFO("symlink %s -> %s failed: %s",
+                     nodepath, stagepath, strerror(errno));
+                umount2(stagepath, MNT_DETACH);
+                unlink(stagepath);
             }
+            INFO("falling back to mknod for %s", devname);
+        } else if (bind_placeholder(hostpath, nodepath) == 0) {
+            DBG("bound %s -> %s (%u:%u)", hostpath, nodepath, maj, min);
+            return 0;
+        } else {
+            INFO("falling back to mknod for %s", devname);
         }
     }
 
@@ -1051,15 +1128,33 @@ static int place_node(const char *nodepath, const char *devname, int hidraw,
     return 0;
 }
 
+/* Unmount a bind placeholder (EINVAL: not a mount point, ENOENT: absent;
+ * both ignored), then unlink it. */
+static void drop_placeholder(const char *path) {
+    if (umount2(path, MNT_DETACH | UMOUNT_NOFOLLOW) != 0 &&
+        errno != EINVAL && errno != ENOENT)
+        DBG("umount2 %s failed: %s", path, strerror(errno));
+    if (unlink(path) == 0)
+        DBG("removed %s", path);
+}
+
 /*
- * Remove a node placed by place_node: unmount a bind placeholder (EINVAL if
- * it is not a mount point, ENOENT if absent: both ignored), then unlink.
+ * Remove a node placed by place_node: the public name (a symlink, a bind
+ * placeholder or a mknod node), then its staged placeholder, if any.
  */
-static void drop_node(const char *nodepath) {
-    if (umount2(nodepath, MNT_DETACH) != 0 && errno != EINVAL && errno != ENOENT)
-        DBG("umount2 %s failed: %s", nodepath, strerror(errno));
-    if (unlink(nodepath) == 0)
-        DBG("removed %s", nodepath);
+static void drop_node(const char *nodepath, const char *devname) {
+    struct stat st;
+    if (lstat(nodepath, &st) == 0 && S_ISLNK(st.st_mode)) {
+        if (unlink(nodepath) == 0)
+            DBG("removed link %s", nodepath);
+    } else {
+        drop_placeholder(nodepath);
+    }
+    if (stage_ready) {
+        char stagepath[PATH_MAX];
+        snprintf(stagepath, sizeof(stagepath), STAGE_DIR "/%s", devname);
+        drop_placeholder(stagepath);
+    }
 }
 
 static void create_input_node(const char *devname) {
@@ -1081,7 +1176,7 @@ static void create_input_node(const char *devname) {
     snprintf(nodepath, sizeof(nodepath), DEV_INPUT "/%s", devname);
 
     /* Remove stale node or placeholder if present */
-    drop_node(nodepath);
+    drop_node(nodepath, devname);
 
     if (place_node(nodepath, devname, 0, maj, min) != 0)
         return;
@@ -1119,7 +1214,7 @@ static void remove_input_node(const char *devname) {
         min = minor(st.st_rdev);
     }
 
-    drop_node(nodepath);
+    drop_node(nodepath, devname);
 
     /* Clean up udev DB entry */
     if (maj || min) {
@@ -1148,7 +1243,7 @@ static void create_hidraw_node(const char *devname) {
     snprintf(nodepath, sizeof(nodepath), DEV_BASE "/%s", devname);
 
     /* Remove stale node or placeholder if present */
-    drop_node(nodepath);
+    drop_node(nodepath, devname);
 
     if (place_node(nodepath, devname, 1, maj, min) != 0)
         return;
@@ -1176,7 +1271,7 @@ static void remove_hidraw_node(const char *devname) {
         min = minor(st.st_rdev);
     }
 
-    drop_node(nodepath);
+    drop_node(nodepath, devname);
 
     if (maj || min) {
         remove_udev_db(maj, min);
@@ -1420,6 +1515,9 @@ int main(void) {
             INFO("WARNING: chmod 0700 %s failed: %s", parent, strerror(errno));
         }
     }
+
+    if (bind_mode)
+        setup_stage_dir();
 
     /* Prepare udev infrastructure */
     ensure_udev_dirs();
