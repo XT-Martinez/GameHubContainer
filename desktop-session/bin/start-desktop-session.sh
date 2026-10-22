@@ -27,6 +27,11 @@ unset GTK_IM_MODULE
 unset LIBSEAT_BACKEND
 unset QT_IM_MODULE
 
+# Desktop apps draw on labwc, not gamescope. With the gamescope WSI layer
+# on, a Vulkan app (e.g. a GTK 4 one) shows a zenity error dialog, and
+# zenity is GTK 4 too, so each dialog spawns the next.
+export ENABLE_GAMESCOPE_WSI=0
+
 # GTK theme, icons, cursor and fonts for GTK 3 and GTK 4 apps
 for v in 3.0 4.0; do
     mkdir -p "${XDG_CONFIG_HOME}/gtk-${v}"
