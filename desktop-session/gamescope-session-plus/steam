@@ -11,6 +11,12 @@ fi
 
 export CLIENTCMD="/usr/local/bin/session-supervisor.sh"
 
+# Steam runs beside gamescope, not under it, so it doesn't get the x11 that
+# gamescope sets for its children; it would pass gaming-session.service's
+# "wayland" to every game. gamescope doesn't expose Wayland to clients, so
+# Electron apps such as Heroic then fail to find a display and exit.
+export XDG_SESSION_TYPE=x11
+
 # Steam's Restart and Shut Down make gamescope-session-plus call reboot or
 # poweroff when Steam exits. The gamer user can't do either in the container,
 # so the session would just end and nothing would bring Steam or Sunshine back.
