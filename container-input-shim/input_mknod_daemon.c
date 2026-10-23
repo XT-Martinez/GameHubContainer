@@ -44,6 +44,19 @@
  *   once its target is the device, so Wine never sees an empty placeholder.
  *   Without both, a controller reconnected mid-game is lost to the game.
  *
+ *   Hidraw view (both modes): /sys is the host kernel's, so a hidraw device
+ *   shows up in /sys/class/hidraw as soon as the kernel creates it, before
+ *   its /dev node is placed.  Steam polls /sys/class/hidraw and opens new
+ *   devices right away; an open that fails with ENOENT is not retried, and
+ *   SDL then takes the controller through evdev (a plain "PS5 Controller"
+ *   with Cross and Circle swapped in the Steam UI) instead of HIDAPI.  So a
+ *   tmpfs is mounted over /sys/class/hidraw, and a device's link appears
+ *   there only once its /dev node is in place (and goes before the node on
+ *   removal).  Host hidraw devices never appear.  The daemon lists the real
+ *   directory through a bind at HIDRAW_REAL_DIR; the kernel's links are
+ *   relative, so device attributes are read through the resolved
+ *   /sys/devices path (hidraw_base).
+ *
  *   Mknod mode (rootful, or HOST_DEV_DIR absent): plain mknod(2) of the
  *     char device.  If a bind in bind mode fails, the daemon falls back to
  *     mknod for that node.
@@ -86,6 +99,8 @@
 
 #define SYSFS_INPUT    "/sys/class/input"
 #define SYSFS_HIDRAW   "/sys/class/hidraw"
+/* Hidraw view: the real /sys/class/hidraw stays readable here (see header) */
+#define HIDRAW_REAL_DIR "/run/gamehub-sysfs-hidraw"
 #define DEV_INPUT      "/dev/input"
 #define DEV_BASE       "/dev"
 #define UDEV_DATA_DIR  "/run/udev/data"
@@ -139,6 +154,9 @@ static int bind_mode;                       /* 1 = bind placeholders, 0 = mknod 
 static char host_dev_dir[PATH_MAX] = HOST_DEV_DEFAULT;
 static unsigned int gamer_uid = GAMER_UID_DEFAULT;
 static int stage_ready;                     /* STAGE_DIR is a shared mount */
+/* Where hidraw devices are listed: HIDRAW_REAL_DIR once the view is set up */
+static const char *hidraw_list = SYSFS_HIDRAW;
+static int hidraw_view;                     /* the hidraw view is mounted */
 
 /* ── Udev netlink header ──────────────────────────────────── */
 
@@ -344,19 +362,23 @@ static int read_device_phys(const char *sysfs_base, const char *devname,
     return 0;
 }
 
+static int hidraw_base(const char *devname, char *base, size_t base_size);
+
 static int read_hidraw_phys(const char *devname, char *phys, size_t phys_size) {
     /* hidraw phys is at /sys/class/hidraw/hidrawN/device/phys
      * but sometimes it's under the hid parent: .../device/device/phys */
-    char phys_path[PATH_MAX];
+    char base[PATH_MAX], phys_path[PATH_MAX];
+    if (!hidraw_base(devname, base, sizeof(base)))
+        return 0;
 
     /* Try direct path first */
     snprintf(phys_path, sizeof(phys_path),
-             SYSFS_HIDRAW "/%s/device/phys", devname);
+             "%s/%s/device/phys", base, devname);
     FILE *f = fopen(phys_path, "r");
     if (!f) {
         /* Try hid parent */
         snprintf(phys_path, sizeof(phys_path),
-                 SYSFS_HIDRAW "/%s/device/device/phys", devname);
+                 "%s/%s/device/device/phys", base, devname);
         f = fopen(phys_path, "r");
     }
     if (!f) return 0;
@@ -419,9 +441,10 @@ static int read_device_name(const char *sysfs_base, const char *devname,
 /* Read HID_NAME from a hidraw device's parent HID uevent */
 static int read_hidraw_hid_name(const char *devname,
                                  char *name, size_t name_size) {
-    char path[PATH_MAX];
-    snprintf(path, sizeof(path),
-             SYSFS_HIDRAW "/%s/device/uevent", devname);
+    char base[PATH_MAX], path[PATH_MAX];
+    if (!hidraw_base(devname, base, sizeof(base)))
+        return 0;
+    snprintf(path, sizeof(path), "%s/%s/device/uevent", base, devname);
     FILE *f = fopen(path, "r");
     if (!f) return 0;
 
@@ -475,7 +498,8 @@ static int is_uhid_claimed_input(const char *devname) {
 
 /* Check if a hidraw device is a UHID device claimed by this container */
 static int is_uhid_claimed_hidraw(const char *devname) {
-    if (!is_uhid_device(SYSFS_HIDRAW, devname))
+    char base[PATH_MAX];
+    if (!hidraw_base(devname, base, sizeof(base)) || !is_uhid_device(base, devname))
         return 0;
     char name[256];
     if (!read_hidraw_hid_name(devname, name, sizeof(name)))
@@ -512,6 +536,34 @@ static int read_devpath(const char *sysfs_base, const char *devname,
     } else {
         snprintf(devpath, devpath_size, "%s", resolved);
     }
+    return 1;
+}
+
+/*
+ * The directory holding a hidraw device's sysfs directory, e.g.
+ * /sys/devices/virtual/misc/uhid/0005:054C:0CE6.0001/hidraw for hidraw0, so
+ * that base/devname is the device.  Resolved from the link in hidraw_list:
+ * the kernel's links are relative to /sys/class/hidraw, which still leads to
+ * /sys/devices with the view's tmpfs mounted there.
+ */
+static int hidraw_base(const char *devname, char *base, size_t base_size) {
+    char link_path[PATH_MAX], target[PATH_MAX], full[2 * PATH_MAX], resolved[PATH_MAX];
+    snprintf(link_path, sizeof(link_path), "%s/%s", hidraw_list, devname);
+    ssize_t len = readlink(link_path, target, sizeof(target) - 1);
+    if (len <= 0)
+        return 0;
+    target[len] = '\0';
+    if (target[0] == '/')
+        snprintf(full, sizeof(full), "%s", target);
+    else
+        snprintf(full, sizeof(full), SYSFS_HIDRAW "/%s", target);
+    if (!realpath(full, resolved))
+        return 0;
+    char *slash = strrchr(resolved, '/');
+    if (!slash || slash == resolved)
+        return 0;
+    *slash = '\0';
+    snprintf(base, base_size, "%s", resolved);
     return 1;
 }
 
@@ -1041,6 +1093,73 @@ static int is_mount_point(const char *path) {
 }
 
 /*
+ * Hidraw view (see the header comment): bind the real /sys/class/hidraw at
+ * HIDRAW_REAL_DIR, then mount a tmpfs over /sys/class/hidraw.  Both mounts
+ * are kept when the daemon restarts.  On failure the real directory stays in
+ * place and is used as before.
+ */
+static void setup_hidraw_view(void) {
+    if (mkdir(HIDRAW_REAL_DIR, 0700) != 0 && errno != EEXIST) {
+        INFO("WARNING: cannot create %s: %s", HIDRAW_REAL_DIR, strerror(errno));
+        return;
+    }
+    int have_real = is_mount_point(HIDRAW_REAL_DIR);
+    int have_view = is_mount_point(SYSFS_HIDRAW);
+    if (have_view && !have_real) {
+        /* Should not happen; the real directory is under the tmpfs */
+        if (umount2(SYSFS_HIDRAW, MNT_DETACH) != 0) {
+            INFO("WARNING: cannot unmount stale %s: %s", SYSFS_HIDRAW, strerror(errno));
+            return;
+        }
+        have_view = 0;
+    }
+    if (!have_real &&
+        mount(SYSFS_HIDRAW, HIDRAW_REAL_DIR, NULL, MS_BIND, NULL) != 0) {
+        INFO("WARNING: cannot bind %s at %s: %s", SYSFS_HIDRAW, HIDRAW_REAL_DIR,
+             strerror(errno));
+        return;
+    }
+    if (!have_view &&
+        mount("gamehub-hidraw", SYSFS_HIDRAW, "tmpfs",
+              MS_NOSUID | MS_NODEV | MS_NOEXEC, "mode=0755,size=64k") != 0) {
+        INFO("WARNING: cannot mount the hidraw view on %s: %s", SYSFS_HIDRAW,
+             strerror(errno));
+        umount2(HIDRAW_REAL_DIR, MNT_DETACH);
+        return;
+    }
+    hidraw_list = HIDRAW_REAL_DIR;
+    hidraw_view = 1;
+    INFO("%s lists only placed container hidraw devices (real list at %s)",
+         SYSFS_HIDRAW, HIDRAW_REAL_DIR);
+}
+
+/* Show a placed hidraw device in the view: copy the kernel's link */
+static void hidraw_view_add(const char *devname) {
+    if (!hidraw_view)
+        return;
+    char real[PATH_MAX], view[PATH_MAX], target[PATH_MAX];
+    snprintf(real, sizeof(real), HIDRAW_REAL_DIR "/%s", devname);
+    snprintf(view, sizeof(view), SYSFS_HIDRAW "/%s", devname);
+    ssize_t len = readlink(real, target, sizeof(target) - 1);
+    if (len <= 0) {
+        DBG("cannot read link %s: %s", real, strerror(errno));
+        return;
+    }
+    target[len] = '\0';
+    unlink(view);
+    if (symlink(target, view) != 0)
+        INFO("WARNING: cannot add %s to the hidraw view: %s", devname, strerror(errno));
+}
+
+static void hidraw_view_remove(const char *devname) {
+    if (!hidraw_view)
+        return;
+    char view[PATH_MAX];
+    snprintf(view, sizeof(view), SYSFS_HIDRAW "/%s", devname);
+    unlink(view);
+}
+
+/*
  * Bind mode: make STAGE_DIR a shared tmpfs (see the header comment).  It must
  * be shared before Steam starts a game, so this runs before the first scan.
  * On failure nodes are bound at their public names as before.
@@ -1231,7 +1350,9 @@ static void remove_input_node(const char *devname) {
 
 static void create_hidraw_node(const char *devname) {
     unsigned int maj, min;
-    if (!read_dev_numbers(SYSFS_HIDRAW, devname, &maj, &min)) {
+    char base[PATH_MAX];
+    if (!hidraw_base(devname, base, sizeof(base)) ||
+        !read_dev_numbers(base, devname, &maj, &min)) {
         DBG("cannot read dev numbers for hidraw %s", devname);
         return;
     }
@@ -1251,9 +1372,12 @@ static void create_hidraw_node(const char *devname) {
     /* Write udev DB for hidraw */
     write_udev_db(maj, min, DEV_CLASS_HIDRAW);
 
+    /* Only now that the node exists may Steam see the device in sysfs */
+    hidraw_view_add(devname);
+
     /* Send synthetic udev event */
     char devpath[PATH_MAX];
-    if (read_devpath(SYSFS_HIDRAW, devname, devpath, sizeof(devpath))) {
+    if (read_devpath(base, devname, devpath, sizeof(devpath))) {
         node_record(devname, 1, devpath);
         send_udev_event("add", devpath, "hidraw", nodepath,
                         maj, min, DEV_CLASS_HIDRAW);
@@ -1263,6 +1387,9 @@ static void create_hidraw_node(const char *devname) {
 static void remove_hidraw_node(const char *devname) {
     char nodepath[PATH_MAX];
     snprintf(nodepath, sizeof(nodepath), DEV_BASE "/%s", devname);
+
+    /* Out of the view before the node goes, the reverse of creation */
+    hidraw_view_remove(devname);
 
     struct stat st;
     unsigned int maj = 0, min = 0;
@@ -1332,9 +1459,13 @@ static int input_node_stale(const char *devname, const char *nodepath) {
 }
 
 static int hidraw_node_stale(const char *devname, const char *nodepath) {
-    char syspath[PATH_MAX];
-    snprintf(syspath, sizeof(syspath), SYSFS_HIDRAW "/%s", devname);
+    char base[PATH_MAX], syspath[PATH_MAX];
     struct stat st;
+    if (!hidraw_base(devname, base, sizeof(base))) {
+        DBG("stale hidraw gone: %s", devname);
+        return 1;
+    }
+    snprintf(syspath, sizeof(syspath), "%s/%s", base, devname);
     if (stat(syspath, &st) != 0) {
         DBG("stale hidraw gone: %s", devname);
         return 1;
@@ -1343,11 +1474,11 @@ static int hidraw_node_stale(const char *devname, const char *nodepath) {
         DBG("hidraw %s no longer container-owned", devname);
         return 1;
     }
-    if (node_rdev_mismatch(SYSFS_HIDRAW, devname, nodepath)) {
+    if (node_rdev_mismatch(base, devname, nodepath)) {
         DBG("hidraw %s rdev no longer matches sysfs", devname);
         return 1;
     }
-    if (node_recreated(SYSFS_HIDRAW, devname, 1)) {
+    if (node_recreated(base, devname, 1)) {
         DBG("hidraw %s was recreated (devpath changed)", devname);
         return 1;
     }
@@ -1413,7 +1544,7 @@ static int poll_and_sync_input(void) {
 static int poll_and_sync_hidraw(void) {
     int count = 0;
 
-    DIR *d = opendir(SYSFS_HIDRAW);
+    DIR *d = opendir(hidraw_list);
     if (!d)
         return 0; /* hidraw sysfs may not exist if no HID devices */
 
@@ -1430,8 +1561,14 @@ static int poll_and_sync_hidraw(void) {
         char nodepath[PATH_MAX];
         snprintf(nodepath, sizeof(nodepath), DEV_BASE "/%s", ent->d_name);
         struct stat st;
-        if (stat(nodepath, &st) == 0)
+        if (stat(nodepath, &st) == 0) {
+            /* Placed before the view existed (daemon restart) */
+            char view[PATH_MAX];
+            snprintf(view, sizeof(view), SYSFS_HIDRAW "/%s", ent->d_name);
+            if (hidraw_view && lstat(view, &st) != 0)
+                hidraw_view_add(ent->d_name);
             continue;
+        }
 
         DBG("new container hidraw: %s", ent->d_name);
         create_hidraw_node(ent->d_name);
@@ -1450,6 +1587,20 @@ static int poll_and_sync_hidraw(void) {
             snprintf(nodepath, sizeof(nodepath), DEV_BASE "/%s", ent->d_name);
             if (hidraw_node_stale(ent->d_name, nodepath))
                 remove_hidraw_node(ent->d_name);
+        }
+        closedir(d);
+    }
+
+    /* Drop view links whose node is gone (e.g. left by a daemon restart) */
+    if (hidraw_view && (d = opendir(SYSFS_HIDRAW))) {
+        while ((ent = readdir(d))) {
+            if (!is_hidraw_device(ent->d_name))
+                continue;
+            char nodepath[PATH_MAX];
+            snprintf(nodepath, sizeof(nodepath), DEV_BASE "/%s", ent->d_name);
+            struct stat st;
+            if (stat(nodepath, &st) != 0)
+                hidraw_view_remove(ent->d_name);
         }
         closedir(d);
     }
@@ -1518,6 +1669,7 @@ int main(void) {
 
     if (bind_mode)
         setup_stage_dir();
+    setup_hidraw_view();
 
     /* Prepare udev infrastructure */
     ensure_udev_dirs();

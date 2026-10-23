@@ -7,7 +7,9 @@
 # Steam rewrites config.vdf on exit, so only edit it while Steam isn't running.
 f="${HOME:-/home/gamer}/.local/share/Steam/config/config.vdf"
 [ -f "$f" ] || exit 0
-pgrep -u "$(id -u)" -x steam >/dev/null && exit 0
+# Look for the Steam client itself: the /usr/local/bin/steam wrapper that runs
+# this script is also a process named "steam".
+pgrep -u "$(id -u)" -f '/ubuntu12_32/steam( |$)' >/dev/null && exit 0
 grep -q '^050000004c050000e60c000011810000,PS5 Controller,a:b1,b:b2,' "$f" || exit 0
 # A middle line of the SDL_GamepadBind value: drop it. The last line also
 # carries the closing quote: keep that by ending the previous line with it.
