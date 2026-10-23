@@ -127,6 +127,8 @@ Turn off both or neither: with only `GAMESCOPE_UNCOMPRESSED_OUTPUT=0`, Sunshine 
 
 The direct path is used only for 10-bit streams (HDR, or 10-bit SDR when Moonlight's HDR option is on), because gamescope's headless output is always 10-bit RGB. It also needs the stream resolution to match the container's. Otherwise Sunshine logs the reason and uses the compute conversion.
 
+[PERFORMANCE.md](PERFORMANCE.md) records the measurements behind this and the other latency work, and the encoder settings used for them.
+
 ### Sleep / DPMS
 
 Steam's idle sleep settings work inside the container. When sleep triggers, gamescope enters DPMS mode (black screen, no frames streamed). On real hardware the power button resumes the system; in a container, gamescope instead wakes automatically when:
