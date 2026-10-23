@@ -377,10 +377,12 @@ RUN --mount=type=cache,dst=/var/cache/libdnf5 \
 
 # Faugus Launcher: runs Windows games through umu-launcher, and its Steam
 # shortcuts start the game without opening a launcher window first. It
-# fetches its own umu-run build on first start.
+# fetches its own umu-run build on first start. Without weak deps: its
+# recommended winetricks pulls in 1.4 GB of system Wine, and Faugus runs
+# Winetricks through umu and Proton instead.
 RUN --mount=type=cache,dst=/var/cache/libdnf5 \
     dnf5 -y copr enable faugus/faugus-launcher && \
-    dnf5 -y install faugus-launcher
+    dnf5 -y install --setopt=install_weak_deps=False faugus-launcher
 
 # ── Overlay custom-built binaries ─────────────────────────────
 
