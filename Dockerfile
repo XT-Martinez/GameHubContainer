@@ -476,6 +476,9 @@ RUN mkdir -p /etc/systemd/user/gamescope-session-plus@steam.service.d && \
         'Environment=GAMESCOPE_PATCHED_EDID_FILE=/run/user/1000/gamescope-edid.bin' \
         'Environment=DXVK_HDR=1' \
         'Environment=ENABLE_HDR_WSI=1' \
+        '# labwc (desktop mode) exports its WAYLAND_DISPLAY to the user manager;' \
+        '# a session restarted afterwards would run gamescope nested in it' \
+        'UnsetEnvironment=WAYLAND_DISPLAY' \
         > /etc/systemd/user/gamescope-session-plus@steam.service.d/container-env.conf && \
     printf '%s\n' \
         '# Steam leaves its shared memory segments behind when it is killed, and' \
