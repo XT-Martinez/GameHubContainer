@@ -1,0 +1,49 @@
+#!/usr/bin/python3 -I
+"""Give Faugus Launcher the SteamGridDB API key from the repo's .env.
+
+run.sh passes .env to the container and container-env.service saves
+STEAMGRIDDB_APIKEY to /run/gamehub/steamgriddb.key (gamer-only). With a key,
+Faugus fetches covers and banners and copies them to Steam's grid folder when
+it makes a Steam shortcut. Faugus merges its defaults into a partial config,
+so this works before Faugus has ever run. SteamGridDB is only switched on when
+the key is first set or changes, so turning it off in Faugus sticks.
+"""
+
+import json
+import os
+import sys
+
+KEY_FILE = "/run/gamehub/steamgriddb.key"
+CONFIG = os.path.expanduser("~/.config/faugus-launcher/config.json")
+
+
+def main():
+    try:
+        with open(KEY_FILE) as f:
+            key = f.read().strip()
+    except OSError:
+        return
+    if not key:
+        return
+    config = {}
+    try:
+        with open(CONFIG) as f:
+            config = json.load(f)
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError) as e:
+        print(f"[faugus-steamgriddb] can't read {CONFIG}: {e}", file=sys.stderr)
+        return
+    if config.get("steamgriddb-api-key") == key:
+        return
+    config["steamgriddb-api-key"] = key
+    config["steamgriddb-enabled"] = "True"
+    os.makedirs(os.path.dirname(CONFIG), exist_ok=True)
+    tmp = CONFIG + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(config, f, indent=4)
+    os.replace(tmp, CONFIG)
+
+
+if __name__ == "__main__":
+    main()

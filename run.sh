@@ -93,6 +93,15 @@ if [[ "${ROOTFUL_MODE}" == "0" && -e "${CPUFREQ_EPP_FILE}" && "$(stat -c %u "${C
 fi
 echo "CPU EPP/boost access: $([[ "${CPUFREQ_RW}" == "1" ]] && echo "read-write (gamehub-cpufreq-access)" || echo "read-only")"
 
+# Optional settings for the container (e.g. STEAMGRIDDB_APIKEY for Faugus's
+# cover art) from .env next to this script.
+ENV_FILE_ARGS=()
+ENV_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.env"
+if [[ -f "${ENV_FILE}" ]]; then
+    ENV_FILE_ARGS=(--env-file "${ENV_FILE}")
+    echo "Env file: ${ENV_FILE}"
+fi
+
 # Rootless and rootful podman keep separate image stores.
 if ! "${PODMAN[@]}" image exists "${IMAGE}"; then
     echo "ERROR: image ${IMAGE} not found in the ${PODMAN[*]} store; build it with: ${PODMAN[*]} build -t ${IMAGE} ." >&2
@@ -234,6 +243,7 @@ echo "Starting ${NAME} (${MODE_LABEL})"
     -e SCREEN_WIDTH="${SCREEN_WIDTH:-1920}" \
     -e SCREEN_HEIGHT="${SCREEN_HEIGHT:-1080}" \
     "${PORT_ARGS[@]}" \
+    "${ENV_FILE_ARGS[@]}" \
     --security-opt label=disable \
     "${IMAGE}"
 

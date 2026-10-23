@@ -1,0 +1,22 @@
+#!/bin/bash
+# Put the image's custom D7VK build into every installed Proton.
+# With PROTON_USE_D7VK=1 (GE-Proton) or PROTON_D7VK_DDRAW=1 (Proton-CachyOS),
+# Proton copies its own files/lib/wine/d7vk/ddraw.dll into the prefix
+# (syswow64) on each launch, so replacing that one file makes
+# Steam, Heroic and Faugus games use this build, prefix-wide. Protons are
+# downloaded into the home volume, so this runs before every Steam start and
+# catches new ones then. The Proton's own build is kept as ddraw.dll.proton.
+src=/usr/lib/gamehub/d7vk/ddraw.dll
+[ -f "$src" ] || exit 0
+home="${HOME:-/home/gamer}"
+for dir in "$home"/.local/share/Steam/compatibilitytools.d/*/files/lib/wine/d7vk/i386-windows \
+           "$home"/.config/heroic/tools/proton/*/files/lib/wine/d7vk/i386-windows; do
+    [ -d "$dir" ] || continue
+    dst="$dir/ddraw.dll"
+    cmp -s "$src" "$dst" && continue
+    if [ -f "$dst" ] && [ ! -e "$dst.proton" ]; then
+        mv "$dst" "$dst.proton"
+    fi
+    cp "$src" "$dst.tmp" && mv "$dst.tmp" "$dst"
+done
+exit 0

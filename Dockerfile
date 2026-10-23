@@ -10,8 +10,8 @@
 #   services/               - systemd user service files
 #   scripts/                - session launch scripts
 #
-# Build:
-#   podman build -t sunshine-gamescope .
+# Build (the custom D7VK is a sibling checkout, not a submodule):
+#   podman build --build-context d7vk=../d7vk -t gamehub-container .
 #
 # If building from the parent Sunshine repo (development):
 #   podman build -f sunshine-container/Dockerfile \
@@ -180,6 +180,25 @@ RUN dnf5 -y install gcc glibc-devel.i686 kernel-headers libatomic libatomic.i686
 COPY container-input-shim/ /build/
 WORKDIR /build
 RUN make    # builds both libuinput_shim.so and input-mknod-daemon
+
+# ============================================================
+# Stage 3b: Build the custom D7VK (sibling checkout, ../d7vk)
+# ============================================================
+# Only the 32-bit ddraw.dll: D3D7 games are 32-bit, and Proton's
+# PROTON_USE_D7VK only ever loads that one.
+FROM base AS d7vk-builder
+
+RUN dnf5 -y install git glslang meson ninja-build python3 \
+        mingw32-gcc-c++ mingw32-winpthreads-static
+
+COPY --from=d7vk meson.build meson_options.txt build-win32.txt \
+     package-release.sh version.h.in buildenv.h.in /src/
+COPY --from=d7vk include/ /src/include/
+COPY --from=d7vk src/ /src/src/
+COPY --from=d7vk subprojects/ /src/subprojects/
+WORKDIR /src
+RUN ./package-release.sh gamehub /out --no-package && \
+    test -f /out/d7vk-gamehub/x32/ddraw.dll
 
 # ============================================================
 # Stage 4: Runtime image
@@ -356,7 +375,17 @@ RUN --mount=type=cache,dst=/var/cache/libdnf5 \
         /etc/xdg/autostart/fr.emersion.mako.desktop \
         /usr/share/applications/fr.emersion.mako.desktop
 
+# Faugus Launcher: runs Windows games through umu-launcher, and its Steam
+# shortcuts start the game without opening a launcher window first. It
+# fetches its own umu-run build on first start.
+RUN --mount=type=cache,dst=/var/cache/libdnf5 \
+    dnf5 -y copr enable faugus/faugus-launcher && \
+    dnf5 -y install faugus-launcher
+
 # ── Overlay custom-built binaries ─────────────────────────────
+
+# Custom D7VK; sync-d7vk (run by the steam wrapper) puts it into each Proton
+COPY --from=d7vk-builder /out/d7vk-gamehub/x32/ddraw.dll /usr/lib/gamehub/d7vk/ddraw.dll
 
 # Custom gamescope (replaces COPR version)
 COPY --from=gamescope-builder /build/install/ /
@@ -424,7 +453,7 @@ RUN python3 -m pywayland.scanner -o /usr/share/gamehub-desktop/python/gamehub_pr
        /etc/gamescope-session-plus/sessions.d/steam && \
     ln -sf /usr/local/bin/steamos-session-select /usr/bin/steamos-session-select && \
     ln -sf /usr/local/bin/return-to-gamemode /usr/bin/return-to-gamemode && \
-    chmod +x /usr/local/bin/*.sh /usr/local/bin/steam /usr/local/bin/register-steam-library /usr/local/bin/steam-drop-ps5bind.sh /usr/local/bin/ryzenadj /usr/local/bin/gamehub-ryzenadj-client /usr/local/bin/install-decky /usr/local/bin/session-supervisor.sh /usr/local/bin/start-desktop-session.sh /usr/local/bin/desktop-launcher.sh /usr/local/bin/desktop-steam.sh /usr/local/bin/switch-to-desktop.sh /usr/local/bin/return-to-steam.sh /usr/local/bin/steamos-session-select /usr/local/bin/return-to-gamemode /usr/local/bin/gamehub-theme /usr/local/bin/gamehub-dock /usr/local/bin/gamehub-confirm /usr/local/bin/gamehub-appearance /usr/share/gamehub-desktop/labwc/autostart
+    chmod +x /usr/local/bin/*.sh /usr/local/bin/steam /usr/local/bin/register-steam-library /usr/local/bin/steam-drop-ps5bind.sh /usr/local/bin/sync-d7vk /usr/local/bin/faugus-steamgriddb /usr/local/bin/ryzenadj /usr/local/bin/gamehub-ryzenadj-client /usr/local/bin/install-decky /usr/local/bin/session-supervisor.sh /usr/local/bin/start-desktop-session.sh /usr/local/bin/desktop-launcher.sh /usr/local/bin/desktop-steam.sh /usr/local/bin/switch-to-desktop.sh /usr/local/bin/return-to-steam.sh /usr/local/bin/steamos-session-select /usr/local/bin/return-to-gamemode /usr/local/bin/gamehub-theme /usr/local/bin/gamehub-dock /usr/local/bin/gamehub-confirm /usr/local/bin/gamehub-appearance /usr/share/gamehub-desktop/labwc/autostart
 
 # Install system services (need real root for mknod/chmod in rootless podman)
 COPY services/device-permissions.service /etc/systemd/system/device-permissions.service

@@ -278,15 +278,18 @@ sudo usermod -aG video,render $USER
 ### Build the image
 
 ```bash
-podman build -t gamehub-container .
+podman build --build-context d7vk=../d7vk -t gamehub-container .
 ```
+
+`../d7vk` is a checkout of the custom D7VK (D3D7 on Vulkan) next to this repo; the build compiles its working tree as it is.
 
 This is a multi-stage build:
 1. **gamescope-builder**: Compiles custom gamescope with Meson (~5 min)
 2. **ffmpeg-builder**: Builds Sunshine's static FFmpeg (LizardByte build-deps, pinned by the Sunshine submodule) with `patches/ffmpeg/` applied (~7 min)
 3. **sunshine-builder**: Compiles custom Sunshine with CMake against that FFmpeg, fetches Boost via FetchContent (~10 min)
 4. **shim-builder**: Compiles the uinput tagging shim and mknod daemon (~5 sec)
-5. **runtime**: Fedora 44 with Valve's Mesa/PipeWire from Bazzite COPRs, Steam, and the built binaries
+5. **d7vk-builder**: Cross-compiles the custom D7VK's 32-bit `ddraw.dll` with MinGW. Before each Steam start, `sync-d7vk` copies it into every installed Proton (Steam's and Heroic's), so games launched with `PROTON_USE_D7VK=1` (GE-Proton) or `PROTON_D7VK_DDRAW=1` (Proton-CachyOS) use it prefix-wide. Each Proton's own build is kept as `ddraw.dll.proton`.
+6. **runtime**: Fedora 44 with Valve's Mesa/PipeWire from Bazzite COPRs, Steam, and the built binaries
 
 Subsequent builds are faster due to Docker layer caching.
 
@@ -294,7 +297,11 @@ Subsequent builds are faster due to Docker layer caching.
 
 ### Single instance
 
-Prefer `./run.sh` (or `./run.sh 1 57989` for a custom port range). `run.sh` runs **rootless** podman (no sudo) by default. `ENABLE_RYZENADJ=1` or `ROOTFUL=1` switches it to `sudo podman` with the legacy rootful flags (see Rootful vs Rootless). Manual rootless equivalent:
+Prefer `./run.sh` (or `./run.sh 1 57989` for a custom port range). `run.sh` runs **rootless** podman (no sudo) by default. `ENABLE_RYZENADJ=1` or `ROOTFUL=1` switches it to `sudo podman` with the legacy rootful flags (see Rootful vs Rootless).
+
+`run.sh` passes a `.env` file next to it (git-ignored) to the container. `STEAMGRIDDB_APIKEY=<key>` there turns on SteamGridDB in Faugus Launcher, so it fetches covers and banners and copies them to Steam with the shortcuts it makes. The key is kept in a file only the `gamer` user can read, not in the services' or games' environment.
+
+Manual rootless equivalent:
 
 ```bash
 podman run -d \

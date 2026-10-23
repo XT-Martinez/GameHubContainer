@@ -19,4 +19,9 @@ fi
 # Drop the saved controller mapping that swaps Cross and Circle in the Steam UI.
 /usr/local/bin/steam-drop-ps5bind.sh || true
 
+# Use the image's D7VK build for PROTON_USE_D7VK, and give Faugus the
+# SteamGridDB key.
+/usr/local/bin/sync-d7vk || true
+/usr/local/bin/faugus-steamgriddb || true
+
 exec /usr/bin/steam "$@"
