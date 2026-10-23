@@ -300,7 +300,7 @@ Prefer `./run.sh` (or `./run.sh 1 57989` for a custom port range). `run.sh` runs
 podman run -d \
     --name sunshine \
     --systemd=true \
-    --shm-size=1g \
+    --shm-size=2g \
     --userns=keep-id:uid=1000,gid=1000 --user 0:0 \
     --cap-add SYS_ADMIN \
     --cap-add NET_ADMIN \
@@ -350,7 +350,7 @@ Each instance needs a unique `CONTAINER_ID`, unique Sunshine port range, and sep
 # Instance 1 — default ports (47984-48010)
 podman run -d --name sunshine-1 \
     --systemd=true \
-    --shm-size=1g \
+    --shm-size=2g \
     --userns=keep-id:uid=1000,gid=1000 --user 0:0 \
     --cap-add SYS_ADMIN --cap-add NET_ADMIN \
     --device /dev/dri --device /dev/uinput --device /dev/uhid --device /dev/fuse \
@@ -374,7 +374,7 @@ podman run -d --name sunshine-1 \
 # SUNSHINE_PORT sets the base port via command line (no need to edit sunshine.conf)
 podman run -d --name sunshine-2 \
     --systemd=true \
-    --shm-size=1g \
+    --shm-size=2g \
     --userns=keep-id:uid=1000,gid=1000 --user 0:0 \
     --cap-add SYS_ADMIN --cap-add NET_ADMIN \
     --device /dev/dri --device /dev/uinput --device /dev/uhid --device /dev/fuse \

@@ -16,4 +16,7 @@ fi
 # Steam starts; a no-op once registered or while Steam is already running.
 /usr/local/bin/register-steam-library || true
 
+# Drop the saved controller mapping that swaps Cross and Circle in the Steam UI.
+/usr/local/bin/steam-drop-ps5bind.sh || true
+
 exec /usr/bin/steam "$@"

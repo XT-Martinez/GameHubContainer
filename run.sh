@@ -217,7 +217,7 @@ echo "Starting ${NAME} (${MODE_LABEL})"
     --hostname "${NAME}" \
     --replace \
     --systemd=true \
-    --shm-size=1g \
+    --shm-size=2g \
     --pids-limit="${PIDS_LIMIT:-32768}" \
     "${MODE_ARGS[@]}" \
     -v /sys:/sys:ro \

@@ -10,3 +10,14 @@ else
 fi
 
 export CLIENTCMD="/usr/local/bin/session-supervisor.sh"
+
+# Steam's Restart and Shut Down make gamescope-session-plus call reboot or
+# poweroff when Steam exits. The gamer user can't do either in the container,
+# so the session would just end and nothing would bring Steam or Sunshine back.
+# Restart the gaming session instead (this also restarts Sunshine).
+reboot() {
+    systemctl --user --no-block restart gaming-session.service
+}
+poweroff() {
+    reboot
+}

@@ -424,7 +424,7 @@ RUN python3 -m pywayland.scanner -o /usr/share/gamehub-desktop/python/gamehub_pr
        /etc/gamescope-session-plus/sessions.d/steam && \
     ln -sf /usr/local/bin/steamos-session-select /usr/bin/steamos-session-select && \
     ln -sf /usr/local/bin/return-to-gamemode /usr/bin/return-to-gamemode && \
-    chmod +x /usr/local/bin/*.sh /usr/local/bin/steam /usr/local/bin/register-steam-library /usr/local/bin/ryzenadj /usr/local/bin/gamehub-ryzenadj-client /usr/local/bin/install-decky /usr/local/bin/session-supervisor.sh /usr/local/bin/start-desktop-session.sh /usr/local/bin/desktop-launcher.sh /usr/local/bin/desktop-steam.sh /usr/local/bin/switch-to-desktop.sh /usr/local/bin/return-to-steam.sh /usr/local/bin/steamos-session-select /usr/local/bin/return-to-gamemode /usr/local/bin/gamehub-theme /usr/local/bin/gamehub-dock /usr/local/bin/gamehub-confirm /usr/local/bin/gamehub-appearance /usr/share/gamehub-desktop/labwc/autostart
+    chmod +x /usr/local/bin/*.sh /usr/local/bin/steam /usr/local/bin/register-steam-library /usr/local/bin/steam-drop-ps5bind.sh /usr/local/bin/ryzenadj /usr/local/bin/gamehub-ryzenadj-client /usr/local/bin/install-decky /usr/local/bin/session-supervisor.sh /usr/local/bin/start-desktop-session.sh /usr/local/bin/desktop-launcher.sh /usr/local/bin/desktop-steam.sh /usr/local/bin/switch-to-desktop.sh /usr/local/bin/return-to-steam.sh /usr/local/bin/steamos-session-select /usr/local/bin/return-to-gamemode /usr/local/bin/gamehub-theme /usr/local/bin/gamehub-dock /usr/local/bin/gamehub-confirm /usr/local/bin/gamehub-appearance /usr/share/gamehub-desktop/labwc/autostart
 
 # Install system services (need real root for mknod/chmod in rootless podman)
 COPY services/device-permissions.service /etc/systemd/system/device-permissions.service
@@ -461,6 +461,9 @@ RUN mkdir -p /etc/systemd/user/gamescope-session-plus@steam.service.d && \
         '[Unit]' \
         'StartLimitIntervalSec=300' \
         'StartLimitBurst=10' \
+        '# sunshine.service stops with the session (BindsTo), so start it again' \
+        '# whenever the session starts, not just at boot' \
+        'Wants=sunshine.service' \
         > /etc/systemd/user/gamescope-session-plus@steam.service.d/restart.conf && \
     printf '%s\n' \
         '[Service]' \
@@ -473,7 +476,15 @@ RUN mkdir -p /etc/systemd/user/gamescope-session-plus@steam.service.d && \
         'Environment=GAMESCOPE_PATCHED_EDID_FILE=/run/user/1000/gamescope-edid.bin' \
         'Environment=DXVK_HDR=1' \
         'Environment=ENABLE_HDR_WSI=1' \
-        > /etc/systemd/user/gamescope-session-plus@steam.service.d/container-env.conf
+        > /etc/systemd/user/gamescope-session-plus@steam.service.d/container-env.conf && \
+    printf '%s\n' \
+        '# Steam leaves its shared memory segments behind when it is killed, and' \
+        '# /dev/shm is only 2 GB: after a few session restarts it fills up and' \
+        '# Steam and games die with SIGBUS. Steam is not running at either point.' \
+        '[Service]' \
+        "ExecStartPre=-/usr/bin/find /dev/shm -maxdepth 1 -user gamer -name 'u*-Shm_*' -delete" \
+        "ExecStopPost=-/usr/bin/find /dev/shm -maxdepth 1 -user gamer -name 'u*-Shm_*' -delete" \
+        > /etc/systemd/user/gamescope-session-plus@steam.service.d/clean-shm.conf
 
 # Enable user services globally
 # sunshine.service must be enabled (is-enabled=enabled) because gamescope-session-plus
