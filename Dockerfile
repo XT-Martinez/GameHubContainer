@@ -107,7 +107,8 @@ RUN find . -name .git -exec rm -rf {} + \
         -DPARALLEL_BUILDS=$(nproc) \
     && cmake --build build --parallel $(nproc) \
     && cmake --install build \
-    && grep -q -a "RGB input %s, coded as %s" /build/prefix/ffmpeg/lib/libavcodec.a
+    && grep -q -a "RGB input %s, coded as %s" /build/prefix/ffmpeg/lib/libavcodec.a \
+    && grep -q -a "hw_encode_invalidate_refs" /build/prefix/ffmpeg/lib/libavcodec.a
 
 # ============================================================
 # Stage 2: Build Sunshine
